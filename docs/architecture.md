@@ -15,6 +15,7 @@ The codebase currently implements:
 - **Phase 4: Planning Agent** (Content strategy formulation, trend evaluation, hook/key-points/CTA design, source grounding)
 - **Phase 5: Writer / Generation Agent** (Platform-aware copy generation, plan adherence, length validation, source citation grounding)
 - **Phase 6: Critic / Reviewer Agent** (Deterministic quality checks, source grounding verification, structured LLM evaluation, APPROVED/REVISE decision logic)
+- **Phase 7: LangGraph Orchestration** (Stateful multi-agent workflow, bounded revision loop, human review checkpoint boundary)
 
 ### 1.1 System Architecture Diagram
 
@@ -27,120 +28,90 @@ graph TD
     FastAPI --> Logging[Centralized Logging: logging.basicConfig]
     Config --> EnvFile[Environment Variables: .env / .env.example]
 
-    ResearchRequest[ResearchRequest] --> ResearchAgent[1. Research Agent]
-    
-    subgraph Research Subsystem [Phase 3: Trend Discovery]
-        ResearchAgent -->|1. Formulate Query| SearchTool[<<interface>> SearchTool]
-        SearchTool <|.. TavilySearchTool[TavilySearchTool: AsyncTavilyClient]
-        SearchTool <|.. MockSearchTool[MockSearchTool: Offline & Testing]
-        SearchTool -->|2. Normalized SearchResult items| ResearchAgent
-        ResearchAgent -->|3. Grounded Prompt| LLMService[Central LLMService]
-        LLMService -->|4. Structured ExtractedTrends| ResearchAgent
-        ResearchAgent --> ResearchResponse[Structured ResearchResponse]
+    subgraph LangGraph Pipeline [Phase 7: Workflow Orchestration]
+        START((START)) --> NodeResearch[1. research_node]
+        NodeResearch --> NodePlanning[2. planning_node]
+        NodePlanning --> NodeWriter[3. writer_node]
+        NodeWriter --> NodeCritic[4. critic_node]
+        
+        NodeCritic --> CondRoute{Decision Router}
+        CondRoute -->|decision == APPROVED| NodeHumanReview[5. human_review_node]
+        CondRoute -->|decision == REVISE & count < max| NodeWriter
+        CondRoute -->|decision == REVISE & count >= max| NodeHumanReview
+        
+        NodeHumanReview --> END((END: WAITING_FOR_HUMAN_REVIEW))
     end
 
-    ResearchResponse --> PlanningRequest[PlanningRequest]
-    
-    subgraph Planning Subsystem [Phase 4: Content Strategy]
-        PlanningRequest --> PlanningAgent[2. Planning Agent]
-        PlanningAgent -->|Evaluate & Plan Prompt| LLMService
-        LLMService -->|Structured ContentPlan| PlanningAgent
-        PlanningAgent -->|Grounding & Source Verification| ContentPlan[Structured ContentPlan]
-    end
-
-    ContentPlan --> WriterRequest[WriterRequest]
-
-    subgraph Writer Subsystem [Phase 5: Copy Generation]
-        WriterRequest --> WriterAgent[3. Writer Agent]
-        WriterAgent -->|Platform-Aware Prompt| LLMService
-        LLMService -->|Structured SocialPost| WriterAgent
-        WriterAgent -->|Plan Adherence & Length Check| SocialPost[Structured SocialPost]
-    end
-
-    SocialPost --> ReviewRequest[ReviewRequest]
-    ContentPlan --> ReviewRequest
-    ResearchResponse -.-> ReviewRequest
-
-    subgraph Critic Subsystem [Phase 6: Quality Review]
-        ReviewRequest --> CriticAgent[4. Critic Agent]
-        CriticAgent -->|Deterministic Checks| QualityRules[Rule-Based Validation]
-        CriticAgent -->|Structured Review Prompt| LLMService
-        LLMService -->|Structured Review Findings| CriticAgent
-        CriticAgent -->|Decision Fusion: APPROVED / REVISE| CriticResult[Structured CriticResult]
-    end
+    NodeResearch --> ResearchAgent[ResearchAgent: Phase 3]
+    NodePlanning --> PlanningAgent[PlanningAgent: Phase 4]
+    NodeWriter --> WriterAgent[WriterAgent: Phase 5]
+    NodeCritic --> CriticAgent[CriticAgent: Phase 6]
 
     subgraph LLM Service Layer [Phase 2: Provider Agnostic]
-        LLMService -->|Bounded Retries & Factory| LLMProvider[<<interface>> LLMProvider]
+        ResearchAgent --> LLMService[LLMService]
+        PlanningAgent --> LLMService
+        WriterAgent --> LLMService
+        CriticAgent --> LLMService
+        LLMService --> LLMProvider[<<interface>> LLMProvider]
         LLMProvider <|.. GroqProvider[GroqProvider: ChatGroq]
-        LLMProvider <|.. FutureProvider[Future Providers: OpenAI / Anthropic]
     end
-
-    Config --> LLMService
-    Config --> TavilySearchTool
 ```
 
 ---
 
-## 2. Agent Responsibilities & Pipeline Workflow
+## 2. Agent Responsibilities & Separation of Concerns
 
-The multi-agent content generation lifecycle establishes clear role separation across stages:
+The architecture establishes a strict separation between **Domain Intelligence** (Agents) and **Flow Coordination** (LangGraph):
+
+| Component | Responsibility | Question Answered |
+|---|---|---|
+| **Research Agent** | Discover trending topics and search evidence from Tavily/Web | *"What is happening right now?"* |
+| **Planning Agent** | Formulate content strategy, angle, hook, and key points | *"What content should we build from this?"* |
+| **Writer Agent** | Write platform-tailored post copy adhering to strategy | *"How should the post actually be written?"* |
+| **Critic Agent** | Validate compliance, citations, quality, and platform constraints | *"Is the post acceptable or does it need revisions?"* |
+| **LangGraph Orchestrator** | Manage state transitions, conditional edges, and bounded loops | *"Which agent executes next and when do we terminate?"* |
+
+---
+
+## 3. LangGraph Orchestration & Bounded Revision Loop (Phase 7)
+
+### 3.1 Centralized Workflow State (`SocialWorkflowState`)
+
+The workflow maintains a serializable state dictionary across all nodes:
+
+- `request: ResearchRequest`: Initial user search request and platform target.
+- `research: ResearchResponse | None`: Verified trends and raw search evidence from `research_node`.
+- `content_plan: ContentPlan | None`: Structured editorial plan from `planning_node`.
+- `social_post: SocialPost | None`: Generated or revised social post copy from `writer_node`.
+- `critic_result: CriticResult | None`: Quality evaluation result from `critic_node`.
+- `revision_feedback: list[str]`: Consolidated feedback passed from Critic to Writer on revisions.
+- `revision_count: int`: Current revision cycle count (0-indexed).
+- `max_revisions: int`: Configured upper bound on revision iterations (default 2).
+- `status: str`: Current lifecycle state (`STARTING`, `PLANNING`, `WRITING`, `CRITIQUING`, `WAITING_FOR_HUMAN_REVIEW`, `FAILED`).
+- `human_review_required: bool`: Checkpoint flag indicating readiness for human review.
+- `error: str | None`: Error details if any node encounters unhandled exceptions.
+
+### 3.2 Graph Execution Flow & Bounded Revision Logic
 
 ```text
-┌─────────────────────────┐
-│   1. RESEARCH AGENT     │  Answers: "What is happening and what topics are relevant?"
-│        (Phase 3)        │  Produces: ResearchResponse (grounded trends & search evidence)
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│   2. PLANNING AGENT     │  Answers: "What content should we create from this research?"
-│        (Phase 4)        │  Produces: ContentPlan (topic, angle, hook, key points, CTA)
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│    3. WRITER AGENT      │  Answers: "How should the actual post be written?"
-│        (Phase 5)        │  Produces: SocialPost (platform-tailored copy, hashtags, grounding)
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│    4. CRITIC AGENT      │  Answers: "Is the copy accurate, brand-aligned, and engaging?"
-│        (Phase 6)        │  Produces: CriticResult (APPROVED / REVISE, actionable feedback)
-└───────────┬─────────────┘
-            │
-            ├──► [APPROVED] ──► Human Review / Future Publishing Engine
-            │
-            └──► [REVISE]   ──► Writer Agent Iteration Loop (Future LangGraph Phase 7)
+START
+  ↓
+research_node
+  ↓
+planning_node
+  ↓
+writer_node ◄───────────────┐
+  ↓                         │
+critic_node                 │
+  ↓                         │ (if REVISE and revision_count < max_revisions)
+[Conditional Edge] ─────────┘
+  ├── APPROVED                     ──► human_review_node ──► END (WAITING_FOR_HUMAN_REVIEW)
+  └── REVISE & count >= max_revisions ──► human_review_node ──► END (WAITING_FOR_HUMAN_REVIEW)
 ```
 
----
-
-## 3. Critic / Reviewer Agent Architecture (Phase 6)
-
-### 3.1 Role & Boundaries
-
-The **Critic Agent** provides independent quality assurance and compliance evaluation:
-- **Inputs**: A structured `ReviewRequest` containing the `SocialPost`, `ContentPlan`, optional `ResearchResponse`, and optional `brand_guidelines`.
-- **Outputs**: A structured `CriticResult` containing `decision` (`APPROVED` or `REVISE`), `issues`, `feedback`, `checks: QualityChecks`, `verified_sources`, and `unverified_claims`.
-- **Strict Boundary**: The Critic Agent evaluates and diagnoses issues, but **never rewrites the post copy**. It provides clear, actionable feedback for subsequent Writer Agent revision iterations.
-
-### 3.2 Evaluation Dimensions & Quality Checks
-
-1. **Relevance & Topic Alignment**: Verifies that the post addresses the planned topic and angle without topic divergence.
-2. **Plan Adherence**: Ensures inclusion of key points, intended format, language, and audience targeting.
-3. **Source Grounding & Anti-Hallucination**: Verifies all cited URLs/sources against supplied research trends and planned references. Flags unsupported or fabricated citations.
-4. **Clarity & Structure**: Assesses readability, formatting whitespace, opening hook strength, and coherence.
-5. **Tone & Platform Fit**: Enforces platform-specific voice (professional for LinkedIn, punchy for X/Twitter).
-6. **Platform Length Constraints**: Enforces deterministic length bounds (e.g. ≤350 chars for X/Twitter single posts).
-7. **Call to Action (CTA)**: Ensures the concluding prompt aligns with `ContentPlan.cta_direction`.
-8. **Hashtags**: Validates hashtag counts and formats against platform standards.
-9. **Originality & Repetition**: Detects verbatim duplicate sentences or excessive filler.
-
-### 3.3 Deterministic & LLM Decision Fusion Logic
-
-The final verdict is derived deterministically:
-$$\text{Final Decision} = \begin{cases} \text{REVISE} & \text{if any deterministic check fails or deterministic issue is found} \\ \text{REVISE} & \text{if LLM evaluation recommends REVISE or finds defects} \\ \text{APPROVED} & \text{if all deterministic checks and LLM quality checks pass with zero defects} \end{cases}$$
+1. **Deterministic Bounded Loop**: When the Critic returns `REVISE`, the workflow increments `revision_count` and passes `revision_feedback` back to `writer_node`.
+2. **Guaranteed Termination**: If `revision_count >= max_revisions`, the graph bypasses further revision cycles and transitions to `human_review_node`, preventing infinite loops.
+3. **Human Review Boundary**: The workflow stops at `WAITING_FOR_HUMAN_REVIEW` without automatic publishing, exposing all intermediate state for a future frontend or human approver.
 
 ---
 
@@ -165,18 +136,19 @@ $$\text{Final Decision} = \begin{cases} \text{REVISE} & \text{if any determinist
 | **Writer Agent** | `backend/app/agents/writer.py` | Platform-tailored social copy generation, length validation, and citation grounding |
 | **Critic Schemas** | `backend/app/models/critic.py` | `ReviewRequest`, `CriticResult`, `QualityChecks`, and critic exceptions |
 | **Critic Agent** | `backend/app/agents/critic.py` | Quality assurance, source grounding verification, and APPROVED/REVISE decision logic |
+| **Workflow State** | `backend/app/workflows/state.py` | Centralized `SocialWorkflowState` schema and `WorkflowStatus` enum |
+| **LangGraph Workflow** | `backend/app/workflows/social_workflow.py` | StateGraph builder, nodes, conditional edges, and bounded revision loop |
 
 ---
 
 ## 5. Planned for Future Phases (Not Implemented Yet)
 
-The following components represent future architecture milestones and are **not** yet implemented in Phase 6:
+The following components represent future architecture milestones and are **not** yet implemented in Phase 7:
 
-### 5.1 LangGraph Orchestration & Human-in-the-Loop (Phase 7)
-- Coordinates Research → Planning → Writer → Critic → Review/Revision Loop with StateGraph and conditional edges.
-
-### 5.2 Database & Persistence Layer (Phase 8)
+### 5.1 Database & Persistence Layer (Phase 8)
 - SQLite with SQLAlchemy and Alembic migrations for local development; PostgreSQL for production.
+- LangGraph persistent checkpointers (e.g. `SqliteSaver` / `AsyncPostgresSaver`) for pause/resume human-in-the-loop approvals.
 
-### 5.3 Frontend Application & Publishing (Phase 9)
-- React + Vite Single Page Application (SPA) and social media publishing engine with OAuth integrations.
+### 5.2 Frontend Application & Publishing (Phase 9)
+- React + Vite Single Page Application (SPA) dashboard for human review, content editing, and manual approvals.
+- Social media publishing engine (LinkedIn OAuth, X API integration, scheduling infrastructure).

@@ -140,9 +140,27 @@ class WriterAgent:
             f"- Call-to-Action (CTA) Direction: {plan.cta_direction}\n"
             f"- Allowed Source Citations:\n{sources_formatted}\n",
             f"### {platform_guide}\n",
+        ]
+
+        if request.previous_post:
+            prompt_parts.append(
+                f"### PREVIOUS POST DRAFT:\n"
+                f"\"\"\"\n{request.previous_post.content}\n\"\"\"\n"
+            )
+
+        if request.revision_feedback:
+            feedback_formatted = "\n".join(f"- {fb}" for fb in request.revision_feedback)
+            prompt_parts.append(
+                f"### CRITIC REVISION FEEDBACK:\n"
+                f"The Critic Agent reviewed the previous draft and requested the following improvements:\n"
+                f"{feedback_formatted}\n"
+                f"Address all of these points in the revised post copy.\n"
+            )
+
+        prompt_parts.append(
             f"### TASK:\n"
             f"Generate a structured SocialPost for {effective_platform.upper()} in {effective_language}."
-        ]
+        )
 
         if corrective_feedback:
             prompt_parts.append(

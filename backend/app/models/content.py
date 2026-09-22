@@ -51,6 +51,14 @@ class WriterRequest(BaseModel):
         default=None,
         description="Tone override (defaults to plan.tone if not specified)",
     )
+    revision_feedback: list[str] = Field(
+        default_factory=list,
+        description="Actionable feedback from Critic Agent on revision iterations",
+    )
+    previous_post: "SocialPost | None" = Field(
+        default=None,
+        description="Previous draft post being revised, if applicable",
+    )
 
     def get_effective_platform(self) -> str:
         """Return the effective platform target, preferring explicit override over plan."""
