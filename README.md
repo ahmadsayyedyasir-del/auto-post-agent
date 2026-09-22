@@ -6,9 +6,9 @@ An agentic AI web application engineered to streamline the full lifecycle of soc
 
 ## 📌 Current Development Phase
 
-> **Phase 1 — Project Foundation**
+> **Phase 2 — LLM Service & Provider Abstraction**
 >
-> The project is currently in **Phase 1 (Project Foundation)**. This phase establishes the initial backend structure, centralized configuration, logging, health check endpoints, dependency setup, and automated testing. AI agents, workflows, and social media integrations will be implemented in subsequent phases.
+> The project has completed **Phase 1 (Project Foundation)** and **Phase 2 (LLM Service Layer)**. This phase establishes a decoupled, provider-agnostic LLM service abstraction with Groq (`ChatGroq`) as the initial implementation, native Pydantic structured output support, centralized configuration, and bounded retry error handling. Autonomous agents and LangGraph workflows will be built on top of this layer in subsequent phases.
 
 ---
 
@@ -26,21 +26,35 @@ Future autonomous agents will include:
 
 ---
 
-## 🏗️ Current Architecture (Phase 1)
+## 🏗️ System Architecture
 
-The Phase 1 architecture delivers a lightweight, extensible foundation:
+### LLM Service Layer (Phase 2)
 
-- **Web Framework**: [FastAPI](https://fastapi.tiangolo.com/) (Python 3.12)
-- **Configuration**: [Pydantic Settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) loading typed settings from `.env`
-- **Logging**: Centralized standard library logging with customizable log levels (`INFO`, `WARNING`, `ERROR`, `DEBUG`)
-- **API Routing**: Modular router layout under `backend/app/api/` for easy route addition
-- **Testing**: `pytest` and `httpx` for test execution
+Future agents interact **only** with `LLMService`, completely isolated from provider-specific SDKs:
 
-For an in-depth architectural breakdown, see [docs/architecture.md](docs/architecture.md).
+```text
+Agent (Research / Writer / Critic)
+         │
+         ▼
+    LLMService  (Bounded Retries & Factory)
+         │
+         ▼
+   <<LLMProvider>>  (Abstract Interface)
+         │
+         ▼
+    GroqProvider  (ChatGroq Adapter)
+```
+
+- **Provider Agnostic**: Switch providers (e.g. from Groq to OpenAI or Anthropic) via configuration without touching agent logic.
+- **Structured Outputs**: Native generation of typed Pydantic models via `service.generate_structured(...)`.
+- **Bounded Retries**: Automated exponential backoff for transient upstream failures.
+- **Security**: Zero credential leakage in logs or exceptions.
+
+For complete architectural details, see [docs/architecture.md](docs/architecture.md).
 
 ---
 
-## 🛠️ Technology Stack (Phase 1)
+## 🛠️ Technology Stack
 
 | Layer / Tool | Technology | Purpose |
 |---|---|---|
@@ -48,7 +62,9 @@ For an in-depth architectural breakdown, see [docs/architecture.md](docs/archite
 | Web Framework | FastAPI | High-performance REST API |
 | ASGI Server | Uvicorn | Async HTTP server |
 | Configuration | Pydantic Settings | Environment and config management |
-| Testing | Pytest & HTTPX | Automated unit & endpoint tests |
+| LLM Abstraction | LangChain Core & Groq | Provider-agnostic LLM integration |
+| Default LLM | Groq (`llama-3.3-70b-versatile`) | Fast, cost-efficient inference |
+| Testing | Pytest, HTTPX & pytest-asyncio | Automated unit & endpoint tests |
 
 ---
 
@@ -66,14 +82,21 @@ ai-social-media-automation/
 │   │   ├── core/            # Core utilities (logging, etc.)
 │   │   │   └── logging.py
 │   │   ├── models/          # Future database models & schemas
-│   │   ├── services/        # Future business logic services
+│   │   ├── services/        # Business logic & integrations
+│   │   │   └── llm/         # Centralized LLM Service Layer
+│   │   │       ├── base.py       # Abstract LLMProvider interface
+│   │   │       ├── exceptions.py # Domain exception hierarchy
+│   │   │       ├── service.py    # Central LLMService orchestrator
+│   │   │       └── providers/
+│   │   │           └── groq.py   # Groq provider implementation
 │   │   ├── tools/           # Future agent tool definitions
 │   │   ├── workflows/       # Future LangGraph workflows
 │   │   ├── config.py        # Centralized Pydantic settings
 │   │   └── main.py          # FastAPI application entry point
 │   ├── tests/
-│   │   └── test_health.py   # Health endpoint unit tests
-│   └── requirements.txt     # Minimal Phase 1 dependencies
+│   │   ├── test_health.py      # Health endpoint unit tests
+│   │   └── test_llm_service.py # LLM service, retry, and mock provider tests
+│   └── requirements.txt     # Backend dependencies
 ├── data/                    # Local data storage (.gitkeep)
 ├── docs/
 │   └── architecture.md      # System architecture documentation
@@ -121,7 +144,16 @@ Copy `.env.example` to create your local `.env` file:
 cp .env.example .env
 ```
 
-*(Optional: adjust `APP_NAME`, `LOG_LEVEL`, `PORT`, etc., in `.env`)*
+To enable live Groq inference in your local environment, add your key to `.env`:
+```ini
+GROQ_API_KEY=gsk_your_groq_api_key_here
+LLM_PROVIDER=groq
+LLM_MODEL=llama-3.3-70b-versatile
+LLM_TEMPERATURE=0.2
+LLM_MAX_RETRIES=3
+```
+
+*(Note: Unit tests run offline using mocks and do NOT require an API key).*
 
 ---
 
@@ -133,32 +165,9 @@ Start the local development server with Uvicorn:
 uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Once running, the interactive documentation is accessible at:
+Once running, interactive documentation is accessible at:
 - **Swagger UI**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 - **ReDoc**: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
-
----
-
-## 🩺 Example Health Endpoint
-
-Send a `GET` request to verify the server is running:
-
-### Request:
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-### Response (200 OK):
-```json
-{
-  "status": "healthy"
-}
-```
-
-Modular endpoint:
-```bash
-curl http://127.0.0.1:8000/api/v1/health
-```
 
 ---
 

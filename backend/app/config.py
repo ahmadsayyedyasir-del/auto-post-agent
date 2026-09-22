@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from typing import Literal
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +27,14 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
     api_v1_str: str = "/api/v1"
+
+    # LLM Service Configuration
+    groq_api_key: str | None = None
+    llm_provider: str = "groq"
+    llm_model: str = "llama-3.3-70b-versatile"
+    llm_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    llm_max_tokens: int | None = None
+    llm_max_retries: int = Field(default=3, ge=1, le=10)
 
 
 @lru_cache
