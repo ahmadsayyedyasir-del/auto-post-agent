@@ -9,6 +9,15 @@ from backend.app.models.planning import ContentPlan
 from backend.app.models.research import ResearchRequest, ResearchResponse
 
 
+class HumanReviewAction(str, Enum):
+    """Actions submitted by human reviewers during the HITL review stage."""
+
+    APPROVE = "APPROVE"
+    REVISE = "REVISE"
+    REJECT = "REJECT"
+    EDIT = "EDIT"
+
+
 class WorkflowStatus(str, Enum):
     """Lifecycle status states for the social media generation workflow."""
 
@@ -18,7 +27,9 @@ class WorkflowStatus(str, Enum):
     WRITING = "WRITING"
     CRITIQUING = "CRITIQUING"
     WAITING_FOR_HUMAN_REVIEW = "WAITING_FOR_HUMAN_REVIEW"
+    APPROVED = "APPROVED"
     COMPLETED = "COMPLETED"
+    REJECTED = "REJECTED"
     FAILED = "FAILED"
 
 
@@ -32,7 +43,14 @@ class SocialWorkflowState(TypedDict, total=False):
     critic_result: CriticResult | None
     revision_feedback: list[str]
     revision_count: int
+    agent_revision_count: int
+    human_revision_count: int
+    revision_source: str  # "AGENT" | "HUMAN"
     max_revisions: int
     status: str
     human_review_required: bool
+    human_decision: str | None
+    human_feedback: list[str] | None
+    edited_content: str | None
     error: str | None
+

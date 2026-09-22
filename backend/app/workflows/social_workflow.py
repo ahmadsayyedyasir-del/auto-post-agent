@@ -1,10 +1,12 @@
-"""LangGraph state machine orchestration for Research -> Planning -> Writer -> Critic workflow."""
+"""LangGraph state machine orchestration for Research -> Planning -> Writer -> Critic -> Human Review workflow."""
 
 import logging
-from typing import Any, Callable
+from typing import Any
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import interrupt
 
 from backend.app.agents.critic import CriticAgent
 from backend.app.agents.planning import PlanningAgent
@@ -14,7 +16,7 @@ from backend.app.models.content import SocialPost, WriterRequest
 from backend.app.models.critic import CriticResult, ReviewRequest
 from backend.app.models.planning import ContentPlan, PlanningRequest
 from backend.app.models.research import ResearchRequest, ResearchResponse
-from backend.app.workflows.state import SocialWorkflowState, WorkflowStatus
+from backend.app.workflows.state import HumanReviewAction, SocialWorkflowState, WorkflowStatus
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,7 @@ def create_social_workflow(
     writer_agent: WriterAgent | None = None,
     critic_agent: CriticAgent | None = None,
     llm_service: Any | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
     """Construct and compile the multi-agent social media content workflow using LangGraph."""
     # Lazy/injected agent resolution
@@ -141,16 +144,35 @@ def create_social_workflow(
         revision_feedback = state.get("revision_feedback", [])
         previous_post = state.get("social_post")
 
-        # Track revision count when revising
         current_revisions = state.get("revision_count", 0)
-        is_revision = bool(state.get("critic_result") and state["critic_result"].decision == "REVISE")
-        new_revision_count = current_revisions + (1 if is_revision else 0)
+        current_agent_revisions = state.get("agent_revision_count", 0)
+        current_human_revisions = state.get("human_revision_count", 0)
+        revision_source = state.get("revision_source", "AGENT")
+
+        is_revision = bool(
+            (state.get("critic_result") and state["critic_result"].decision == "REVISE")
+            or revision_feedback
+        )
+
+        new_agent_revisions = current_agent_revisions
+        new_human_revisions = current_human_revisions
+
+        if is_revision and previous_post is not None:
+            if revision_source == "HUMAN":
+                new_human_revisions = current_human_revisions
+            else:
+                new_agent_revisions = current_agent_revisions + 1
+            new_revision_count = new_agent_revisions + new_human_revisions
+        else:
+            new_revision_count = current_revisions
 
         logger.info(
-            "Executing writer_node for topic '%s' on '%s' (revision cycle: %d)",
+            "Executing writer_node for topic '%s' on '%s' (total revisions: %d, agent: %d, human: %d)",
             plan.topic,
             effective_platform,
             new_revision_count,
+            new_agent_revisions,
+            new_human_revisions,
         )
 
         try:
@@ -168,6 +190,8 @@ def create_social_workflow(
             return {
                 "social_post": social_post,
                 "revision_count": new_revision_count,
+                "agent_revision_count": new_agent_revisions,
+                "human_revision_count": new_human_revisions,
                 "status": WorkflowStatus.CRITIQUING.value,
                 "error": None,
             }
@@ -213,14 +237,22 @@ def create_social_workflow(
                     if issue not in combined_feedback:
                         combined_feedback.append(issue)
 
+            agent_revisions = state.get("agent_revision_count", 0)
+            max_revisions = state.get("max_revisions", 2)
+            is_approved = critic_result.decision == "APPROVED"
+            is_max_reached = agent_revisions >= max_revisions
+
+            next_status = (
+                WorkflowStatus.WAITING_FOR_HUMAN_REVIEW.value
+                if (is_approved or is_max_reached)
+                else WorkflowStatus.WRITING.value
+            )
+
             return {
                 "critic_result": critic_result,
                 "revision_feedback": combined_feedback,
-                "status": (
-                    WorkflowStatus.WAITING_FOR_HUMAN_REVIEW.value
-                    if critic_result.decision == "APPROVED"
-                    else WorkflowStatus.WRITING.value
-                ),
+                "status": next_status,
+                "human_review_required": bool(is_approved or is_max_reached),
                 "error": None,
             }
         except Exception as err:
@@ -231,25 +263,110 @@ def create_social_workflow(
             }
 
     async def human_review_node(state: SocialWorkflowState) -> dict[str, Any]:
-        """Final workflow checkpoint establishing human review readiness."""
+        """HITL interruption node pausing execution until human review decision is submitted."""
+        if state.get("error"):
+            return {"status": WorkflowStatus.FAILED.value}
+
         logger.info(
-            "Executing human_review_node (final status: WAITING_FOR_HUMAN_REVIEW, revision_count: %d)",
+            "Executing human_review_node (suspending for human review, total revisions: %d)",
             state.get("revision_count", 0),
         )
+
+        review_prompt_data = {
+            "action_required": "human_review",
+            "topic": state["content_plan"].topic if state.get("content_plan") else "",
+            "platform": state["request"].platform if state.get("request") else "linkedin",
+            "current_post": state.get("social_post").model_dump() if state.get("social_post") else None,
+            "critic_result": state.get("critic_result").model_dump() if state.get("critic_result") else None,
+            "revision_count": state.get("revision_count", 0),
+            "agent_revision_count": state.get("agent_revision_count", 0),
+            "human_revision_count": state.get("human_revision_count", 0),
+        }
+
+        # LangGraph native interrupt suspending execution until Command(resume=...)
+        review_data: dict[str, Any] = interrupt(review_prompt_data)
+
+        action = str(review_data.get("action", HumanReviewAction.APPROVE.value)).upper()
+        feedback_raw = review_data.get("feedback")
+        if isinstance(feedback_raw, str):
+            feedback_list = [feedback_raw]
+        elif isinstance(feedback_raw, list):
+            feedback_list = [str(item) for item in feedback_raw]
+        else:
+            feedback_list = []
+
+        edited_content = review_data.get("content")
+
+        current_tot = state.get("revision_count", 0)
+        current_human = state.get("human_revision_count", 0)
+
+        if action == HumanReviewAction.EDIT.value:
+            updated_post = state.get("social_post")
+            if updated_post and edited_content:
+                updated_post = updated_post.model_copy(update={"content": edited_content})
+            return {
+                "human_decision": HumanReviewAction.EDIT.value,
+                "social_post": updated_post,
+                "edited_content": edited_content,
+                "revision_source": "HUMAN",
+                "human_revision_count": current_human + 1,
+                "revision_count": current_tot + 1,
+                "status": WorkflowStatus.CRITIQUING.value,
+                "human_review_required": False,
+            }
+        elif action == HumanReviewAction.REVISE.value:
+            return {
+                "human_decision": HumanReviewAction.REVISE.value,
+                "human_feedback": feedback_list,
+                "revision_feedback": feedback_list,
+                "revision_source": "HUMAN",
+                "human_revision_count": current_human + 1,
+                "revision_count": current_tot + 1,
+                "status": WorkflowStatus.WRITING.value,
+                "human_review_required": False,
+            }
+        elif action == HumanReviewAction.REJECT.value:
+            return {
+                "human_decision": HumanReviewAction.REJECT.value,
+                "status": WorkflowStatus.REJECTED.value,
+                "human_review_required": False,
+            }
+        else:
+            # Default APPROVE
+            return {
+                "human_decision": HumanReviewAction.APPROVE.value,
+                "status": WorkflowStatus.APPROVED.value,
+                "human_review_required": False,
+            }
+
+    async def finalize_node(state: SocialWorkflowState) -> dict[str, Any]:
+        """Finalize workflow and ensure terminal status."""
+        if state.get("error"):
+            return {"status": WorkflowStatus.FAILED.value}
+
+        decision = state.get("human_decision")
+        if decision == HumanReviewAction.REJECT.value:
+            final_status = WorkflowStatus.REJECTED.value
+        elif decision == HumanReviewAction.APPROVE.value:
+            final_status = WorkflowStatus.APPROVED.value
+        else:
+            final_status = state.get("status", WorkflowStatus.APPROVED.value)
+
+        logger.info("Workflow completed with final status: %s", final_status)
         return {
-            "status": WorkflowStatus.WAITING_FOR_HUMAN_REVIEW.value,
-            "human_review_required": True,
+            "status": final_status,
+            "human_review_required": False,
         }
 
     # --------------------------------------------------------------------------
-    # Conditional Edge Router
+    # Conditional Edge Routers
     # --------------------------------------------------------------------------
 
     def route_after_critic(state: SocialWorkflowState) -> str:
         """Route conditionally based on Critic decision and bounded revision limits."""
         if state.get("error"):
             logger.warning("Workflow state has error; routing to end.")
-            return "end"
+            return "finalize"
 
         critic_result = state.get("critic_result")
         if not critic_result:
@@ -260,24 +377,43 @@ def create_social_workflow(
             logger.info("Critic approved post; routing to human_review_node.")
             return "human_review"
 
-        # REVISE path with bounded revision loop
-        revision_count = state.get("revision_count", 0)
+        # REVISE path with bounded autonomous agent revision loop
+        agent_revision_count = state.get("agent_revision_count", 0)
         max_revisions = state.get("max_revisions", 2)
 
-        if revision_count < max_revisions:
+        if agent_revision_count < max_revisions:
             logger.info(
-                "Critic requested REVISE (cycle %d < max %d); routing back to writer_node.",
-                revision_count,
+                "Critic requested REVISE (agent cycle %d < max %d); routing back to writer_node.",
+                agent_revision_count,
                 max_revisions,
             )
             return "writer"
 
         logger.info(
             "Critic requested REVISE but max_revisions reached (%d/%d); routing to human_review_node.",
-            revision_count,
+            agent_revision_count,
             max_revisions,
         )
         return "human_review"
+
+    def route_after_human_review(state: SocialWorkflowState) -> str:
+        """Route conditionally based on human decision."""
+        if state.get("error"):
+            return "finalize"
+
+        decision = state.get("human_decision")
+        if decision == HumanReviewAction.REVISE.value:
+            logger.info("Human requested REVISE; routing to writer_node.")
+            return "writer"
+        elif decision == HumanReviewAction.EDIT.value:
+            logger.info("Human submitted EDIT; routing to critic_node for validation.")
+            return "critic"
+        elif decision == HumanReviewAction.REJECT.value:
+            logger.info("Human submitted REJECT; routing to finalize.")
+            return "finalize"
+        else:
+            logger.info("Human submitted APPROVE; routing to finalize.")
+            return "finalize"
 
     # --------------------------------------------------------------------------
     # Graph Construction
@@ -291,6 +427,7 @@ def create_social_workflow(
     builder.add_node("writer", writer_node)
     builder.add_node("critic", critic_node)
     builder.add_node("human_review", human_review_node)
+    builder.add_node("finalize", finalize_node)
 
     # Add edges
     builder.add_edge(START, "research")
@@ -305,10 +442,21 @@ def create_social_workflow(
         {
             "writer": "writer",
             "human_review": "human_review",
-            "end": END,
+            "finalize": "finalize",
         },
     )
 
-    builder.add_edge("human_review", END)
+    # Add conditional routing after human review
+    builder.add_conditional_edges(
+        "human_review",
+        route_after_human_review,
+        {
+            "writer": "writer",
+            "critic": "critic",
+            "finalize": "finalize",
+        },
+    )
 
-    return builder.compile()
+    builder.add_edge("finalize", END)
+
+    return builder.compile(checkpointer=checkpointer)

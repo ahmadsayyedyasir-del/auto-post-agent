@@ -16,6 +16,7 @@ The codebase currently implements:
 - **Phase 5: Writer / Generation Agent** (Platform-aware copy generation, plan adherence, length validation, source citation grounding)
 - **Phase 6: Critic / Reviewer Agent** (Deterministic quality checks, source grounding verification, structured LLM evaluation, APPROVED/REVISE decision logic)
 - **Phase 7: LangGraph Orchestration** (Stateful multi-agent workflow, bounded revision loop, human review checkpoint boundary)
+- **Phase 8: Database & Persistence Layer** (SQLAlchemy 2.x async ORM, SQLite/PostgreSQL compatibility, Alembic migrations, Repository pattern)
 
 ### 1.1 System Architecture Diagram
 
@@ -26,6 +27,7 @@ graph TD
     FastAPI --> V1Router
     FastAPI --> Config[Centralized Config: pydantic-settings]
     FastAPI --> Logging[Centralized Logging: logging.basicConfig]
+    FastAPI --> Database[Database Session & Engine: session.py]
     Config --> EnvFile[Environment Variables: .env / .env.example]
 
     subgraph LangGraph Pipeline [Phase 7: Workflow Orchestration]
@@ -55,13 +57,25 @@ graph TD
         LLMService --> LLMProvider[<<interface>> LLMProvider]
         LLMProvider <|.. GroqProvider[GroqProvider: ChatGroq]
     end
+
+    subgraph Persistence Layer [Phase 8: SQLAlchemy 2.x & Repositories]
+        WorkflowRepo[WorkflowRepository] --> WorkflowRunModel[(workflow_runs)]
+        PostRepo[PostRepository] --> PostModel[(posts)]
+        PostRepo --> RevisionModel[(revisions)]
+        FeedbackRepo[FeedbackRepository] --> FeedbackModel[(feedbacks)]
+        WorkflowRunModel -->|1:N Cascade| PostModel
+        WorkflowRunModel -->|1:N Cascade| RevisionModel
+        WorkflowRunModel -->|1:N Cascade| FeedbackModel
+        PostModel -->|1:N Cascade| RevisionModel
+        PostModel -->|1:N Cascade| FeedbackModel
+    end
 ```
 
 ---
 
 ## 2. Agent Responsibilities & Separation of Concerns
 
-The architecture establishes a strict separation between **Domain Intelligence** (Agents) and **Flow Coordination** (LangGraph):
+The architecture establishes a strict separation between **Domain Intelligence** (Agents), **Flow Coordination** (LangGraph), and **Persistence** (Database):
 
 | Component | Responsibility | Question Answered |
 |---|---|---|
@@ -70,6 +84,7 @@ The architecture establishes a strict separation between **Domain Intelligence**
 | **Writer Agent** | Write platform-tailored post copy adhering to strategy | *"How should the post actually be written?"* |
 | **Critic Agent** | Validate compliance, citations, quality, and platform constraints | *"Is the post acceptable or does it need revisions?"* |
 | **LangGraph Orchestrator** | Manage state transitions, conditional edges, and bounded loops | *"Which agent executes next and when do we terminate?"* |
+| **Database & Repositories** | Store workflow runs, posts, historical revision snapshots, and feedback | *"Where are workflow states, post drafts, revisions, and audits preserved?"* |
 
 ---
 
@@ -115,7 +130,91 @@ critic_node                 │
 
 ---
 
-## 4. Implemented Modules Overview
+## 4. Database & Persistence Architecture (Phase 8)
+
+### 4.1 Relational Schema & Entity Relationships
+
+The schema is built using **SQLAlchemy 2.x declarative mapped models** with full async support (`aiosqlite` for SQLite development/testing, `asyncpg` for PostgreSQL production):
+
+```mermaid
+erDiagram
+    WORKFLOW_RUNS ||--o{ POSTS : "contains (1:N)"
+    WORKFLOW_RUNS ||--o{ REVISIONS : "tracks (1:N)"
+    WORKFLOW_RUNS ||--o{ FEEDBACKS : "records (1:N)"
+    POSTS ||--o{ REVISIONS : "version history (1:N)"
+    POSTS ||--o{ FEEDBACKS : "reviews (1:N)"
+
+    WORKFLOW_RUNS {
+        string id PK "UUID string"
+        string niche "Target industry/niche"
+        string target_platform "linkedin / twitter"
+        string audience "Target audience"
+        string language "Content language"
+        string status "STARTING/PLANNING/WRITING/CRITIQUING/WAITING_FOR_HUMAN_REVIEW/FAILED"
+        string current_stage "Current pipeline stage"
+        int revision_count "Total revisions executed"
+        int max_revisions "Max allowable revisions"
+        json research_data "JSON snapshot of ResearchResponse"
+        json content_plan "JSON snapshot of ContentPlan"
+        string error_message "Error details if failed"
+        datetime created_at "Creation timestamp"
+        datetime updated_at "Update timestamp"
+    }
+
+    POSTS {
+        string id PK "UUID string"
+        string workflow_run_id FK "Reference to workflow_runs.id (ON DELETE CASCADE)"
+        string platform "linkedin / twitter"
+        string topic "Post topic"
+        text content "Current active post text"
+        string status "DRAFT / IN_REVIEW / APPROVED / SCHEDULED / PUBLISHED / REJECTED"
+        json hashtags "Array of hashtags"
+        string cta "Call to action text"
+        json source_references "Verified citation URLs"
+        int character_count "Length of current content"
+        datetime created_at "Creation timestamp"
+        datetime updated_at "Update timestamp"
+    }
+
+    REVISIONS {
+        string id PK "UUID string"
+        string post_id FK "Reference to posts.id (ON DELETE CASCADE)"
+        string workflow_run_id FK "Reference to workflow_runs.id (ON DELETE CASCADE)"
+        int revision_number "Sequential draft version (1, 2, ...)"
+        text content "Historical post text snapshot"
+        json hashtags "Snapshot of hashtags"
+        string cta "Snapshot of CTA"
+        json source_references "Snapshot of source references"
+        json revision_feedback "Critic issues/feedback addressed in this revision"
+        datetime created_at "Snapshot timestamp"
+    }
+
+    FEEDBACKS {
+        string id PK "UUID string"
+        string workflow_run_id FK "Reference to workflow_runs.id (ON DELETE CASCADE)"
+        string post_id FK "Reference to posts.id (ON DELETE CASCADE)"
+        string feedback_source "CRITIC / HUMAN"
+        string decision "APPROVED / REVISE / REJECTED"
+        json issues "Identified quality/compliance issues"
+        json feedback_items "Actionable revision instructions"
+        json quality_checks "Dict of automated boolean checks"
+        json verified_sources "Grounded reference links"
+        json unverified_claims "Unsupported factual claims"
+        text reviewer_notes "Manual review notes"
+        datetime created_at "Evaluation timestamp"
+    }
+```
+
+### 4.2 Repository Pattern Abstraction
+
+- `BaseRepository[T]`: Generic async CRUD operations (`create`, `get_by_id`, `list_all`, `update`, `delete`).
+- `WorkflowRepository`: Domain operations for `WorkflowRun` (`get_with_relations`, `get_by_status`, `update_status`).
+- `PostRepository`: Operations for `Post` and `Revision` history snapshots (`get_with_revisions`, `get_by_workflow`, `create_revision_snapshot`).
+- `FeedbackRepository`: Querying evaluation records (`get_for_post`, `get_for_workflow`).
+
+---
+
+## 5. Implemented Modules Overview
 
 | Subsystem | Module | Purpose |
 |---|---|---|
@@ -123,6 +222,12 @@ critic_node                 │
 | **Configuration** | `backend/app/config.py` | Type-safe settings with environment variable loading |
 | **Logging** | `backend/app/core/logging.py` | Centralized structured logging formatting |
 | **Health API** | `backend/app/api/v1/health.py` | Basic liveness and readiness health check endpoints |
+| **Database Session** | `backend/app/db/session.py` | Async engine creation, session factory, Base declarative class |
+| **Workflow ORM** | `backend/app/db/models/workflow.py` | `WorkflowRun` SQLAlchemy model |
+| **Post ORM** | `backend/app/db/models/post.py` | `Post` and `Revision` SQLAlchemy models |
+| **Feedback ORM** | `backend/app/db/models/feedback.py` | `Feedback` evaluation & audit SQLAlchemy model |
+| **Repositories** | `backend/app/db/repositories/` | Generic `BaseRepository`, `WorkflowRepository`, `PostRepository`, `FeedbackRepository` |
+| **Migrations** | `backend/alembic/` | Alembic async database migrations configuration and initial schema |
 | **LLM Interface** | `backend/app/services/llm/base.py` | `LLMProvider` abstract base class defining `generate` & `generate_structured` |
 | **LLM Exceptions** | `backend/app/services/llm/exceptions.py` | Hierarchical domain exceptions for configuration, provider, and response errors |
 | **Groq Adapter** | `backend/app/services/llm/providers/groq.py` | `GroqProvider` implementing `LLMProvider` via LangChain's `ChatGroq` |
@@ -141,14 +246,15 @@ critic_node                 │
 
 ---
 
-## 5. Planned for Future Phases (Not Implemented Yet)
+## 6. Planned for Future Phases (Not Implemented Yet)
 
-The following components represent future architecture milestones and are **not** yet implemented in Phase 7:
+The following components represent future architecture milestones and are **not** yet implemented in Phase 8:
 
-### 5.1 Database & Persistence Layer (Phase 8)
-- SQLite with SQLAlchemy and Alembic migrations for local development; PostgreSQL for production.
-- LangGraph persistent checkpointers (e.g. `SqliteSaver` / `AsyncPostgresSaver`) for pause/resume human-in-the-loop approvals.
+### 6.1 Workflow Persistence Integration & HITL Checkpoints (Phase 9)
+- LangGraph persistence layer using database checkpointers (e.g. `SqliteSaver` / `AsyncPostgresSaver`) for pause/resume human approval cycles.
+- REST API endpoints for triggering workflows, querying runs, and submitting human approvals.
 
-### 5.2 Frontend Application & Publishing (Phase 9)
+### 6.2 Frontend Application & Publishing (Phase 10)
 - React + Vite Single Page Application (SPA) dashboard for human review, content editing, and manual approvals.
 - Social media publishing engine (LinkedIn OAuth, X API integration, scheduling infrastructure).
+

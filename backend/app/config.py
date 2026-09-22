@@ -43,8 +43,20 @@ class Settings(BaseSettings):
     # Planning Agent Configuration (Phase 4)
     planning_max_retries: int = Field(default=2, ge=1, le=5)
 
+    # Database & Persistence Configuration (Phase 8)
+    database_url: str = "sqlite+aiosqlite:///./social_media.db"
+    database_echo: bool = False
+    database_pool_size: int = Field(default=5, ge=1, le=50)
+    database_max_overflow: int = Field(default=10, ge=0, le=50)
+    database_pool_recycle: int = Field(default=3600, ge=60)
+
+    # LangGraph HITL Checkpoint Configuration (Phase 9)
+    checkpointer_type: Literal["memory", "sqlite", "postgres"] = "sqlite"
+    checkpoint_db_path: str = "data/checkpoints.db"
+
 
 @lru_cache
 def get_settings() -> Settings:
     """Return a cached instance of the application settings."""
     return Settings()
+
