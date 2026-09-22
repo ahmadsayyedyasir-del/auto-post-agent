@@ -1,5 +1,23 @@
 """Models and schemas package root."""
 
+from backend.app.models.content import (
+    InvalidPlanError,
+    PlatformConstraintError,
+    SocialPost,
+    UngroundedContentError,
+    WriterError,
+    WriterRequest,
+    WriterValidationFailedError,
+)
+from backend.app.models.critic import (
+    CriticDecision,
+    CriticError,
+    CriticResult,
+    CriticValidationFailedError,
+    InvalidReviewRequestError,
+    QualityChecks,
+    ReviewRequest,
+)
 from backend.app.models.planning import (
     ContentPlan,
     EmptyResearchError,
@@ -30,4 +48,20 @@ __all__ = [
     "EmptyResearchError",
     "UngroundedPlanError",
     "PlanningValidationFailedError",
+    # Content models & exceptions
+    "WriterRequest",
+    "SocialPost",
+    "WriterError",
+    "InvalidPlanError",
+    "UngroundedContentError",
+    "PlatformConstraintError",
+    "WriterValidationFailedError",
+    # Critic models & exceptions
+    "CriticDecision",
+    "CriticError",
+    "InvalidReviewRequestError",
+    "CriticValidationFailedError",
+    "QualityChecks",
+    "ReviewRequest",
+    "CriticResult",
 ]

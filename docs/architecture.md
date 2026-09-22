@@ -13,6 +13,8 @@ The codebase currently implements:
 - **Phase 2: LLM Service Layer** (Provider-agnostic LLM abstraction, Groq adapter, structured output, bounded retries)
 - **Phase 3: Research Agent** (Topic discovery, search tool abstraction, Tavily integration, source grounding, trend validation)
 - **Phase 4: Planning Agent** (Content strategy formulation, trend evaluation, hook/key-points/CTA design, source grounding)
+- **Phase 5: Writer / Generation Agent** (Platform-aware copy generation, plan adherence, length validation, source citation grounding)
+- **Phase 6: Critic / Reviewer Agent** (Deterministic quality checks, source grounding verification, structured LLM evaluation, APPROVED/REVISE decision logic)
 
 ### 1.1 System Architecture Diagram
 
@@ -46,6 +48,27 @@ graph TD
         PlanningAgent -->|Grounding & Source Verification| ContentPlan[Structured ContentPlan]
     end
 
+    ContentPlan --> WriterRequest[WriterRequest]
+
+    subgraph Writer Subsystem [Phase 5: Copy Generation]
+        WriterRequest --> WriterAgent[3. Writer Agent]
+        WriterAgent -->|Platform-Aware Prompt| LLMService
+        LLMService -->|Structured SocialPost| WriterAgent
+        WriterAgent -->|Plan Adherence & Length Check| SocialPost[Structured SocialPost]
+    end
+
+    SocialPost --> ReviewRequest[ReviewRequest]
+    ContentPlan --> ReviewRequest
+    ResearchResponse -.-> ReviewRequest
+
+    subgraph Critic Subsystem [Phase 6: Quality Review]
+        ReviewRequest --> CriticAgent[4. Critic Agent]
+        CriticAgent -->|Deterministic Checks| QualityRules[Rule-Based Validation]
+        CriticAgent -->|Structured Review Prompt| LLMService
+        LLMService -->|Structured Review Findings| CriticAgent
+        CriticAgent -->|Decision Fusion: APPROVED / REVISE| CriticResult[Structured CriticResult]
+    end
+
     subgraph LLM Service Layer [Phase 2: Provider Agnostic]
         LLMService -->|Bounded Retries & Factory| LLMProvider[<<interface>> LLMProvider]
         LLMProvider <|.. GroqProvider[GroqProvider: ChatGroq]
@@ -77,43 +100,47 @@ The multi-agent content generation lifecycle establishes clear role separation a
             ▼
 ┌─────────────────────────┐
 │    3. WRITER AGENT      │  Answers: "How should the actual post be written?"
-│    (Future Phase 5)     │  Produces: DraftPost (platform-tailored copy & formatting)
+│        (Phase 5)        │  Produces: SocialPost (platform-tailored copy, hashtags, grounding)
 └───────────┬─────────────┘
             │
             ▼
 ┌─────────────────────────┐
 │    4. CRITIC AGENT      │  Answers: "Is the copy accurate, brand-aligned, and engaging?"
-│    (Future Phase 6)     │  Produces: ReviewFeedback & Quality Score
-└─────────────────────────┘
+│        (Phase 6)        │  Produces: CriticResult (APPROVED / REVISE, actionable feedback)
+└───────────┬─────────────┘
+            │
+            ├──► [APPROVED] ──► Human Review / Future Publishing Engine
+            │
+            └──► [REVISE]   ──► Writer Agent Iteration Loop (Future LangGraph Phase 7)
 ```
 
 ---
 
-## 3. Planning Agent Architecture (Phase 4)
+## 3. Critic / Reviewer Agent Architecture (Phase 6)
 
 ### 3.1 Role & Boundaries
 
-The **Planning Agent** bridges research and writing:
-- **Inputs**: A structured `PlanningRequest` containing the `ResearchResponse` from Phase 3, plus target platform, audience, content goals, preferred tone, and content format.
-- **Outputs**: A validated `ContentPlan` detailing topic, angle, hook direction, structured key points, call to action, and verified source citations.
-- **Strict Boundary**: The Planning Agent does **not** generate final post copy or hashtags. It defines the editorial and strategic blueprint for the Writer Agent.
+The **Critic Agent** provides independent quality assurance and compliance evaluation:
+- **Inputs**: A structured `ReviewRequest` containing the `SocialPost`, `ContentPlan`, optional `ResearchResponse`, and optional `brand_guidelines`.
+- **Outputs**: A structured `CriticResult` containing `decision` (`APPROVED` or `REVISE`), `issues`, `feedback`, `checks: QualityChecks`, `verified_sources`, and `unverified_claims`.
+- **Strict Boundary**: The Critic Agent evaluates and diagnoses issues, but **never rewrites the post copy**. It provides clear, actionable feedback for subsequent Writer Agent revision iterations.
 
-### 3.2 Domain Schemas & Exceptions
+### 3.2 Evaluation Dimensions & Quality Checks
 
-- **`PlanningRequest`**: Encapsulates `research: ResearchResponse`, `niche`, `audience`, `platform`, `language`, `content_goal`, `preferred_tone`, and `content_type`.
-- **`ContentPlan`**: Structured output including `topic`, `angle`, `platform`, `audience`, `language`, `content_type`, `tone`, `hook_direction`, `key_points` (validated list >= 1), `cta_direction`, `source_references`, `selected_trend_topic`, and `reasoning`.
-- **Custom Exceptions**:
-  - `PlanningError`: Base exception for planning domain.
-  - `EmptyResearchError`: Raised when input research contains no trends.
-  - `UngroundedPlanError`: Raised when output violates grounding rules.
-  - `PlanningValidationFailedError`: Raised when retry limits are exhausted.
+1. **Relevance & Topic Alignment**: Verifies that the post addresses the planned topic and angle without topic divergence.
+2. **Plan Adherence**: Ensures inclusion of key points, intended format, language, and audience targeting.
+3. **Source Grounding & Anti-Hallucination**: Verifies all cited URLs/sources against supplied research trends and planned references. Flags unsupported or fabricated citations.
+4. **Clarity & Structure**: Assesses readability, formatting whitespace, opening hook strength, and coherence.
+5. **Tone & Platform Fit**: Enforces platform-specific voice (professional for LinkedIn, punchy for X/Twitter).
+6. **Platform Length Constraints**: Enforces deterministic length bounds (e.g. ≤350 chars for X/Twitter single posts).
+7. **Call to Action (CTA)**: Ensures the concluding prompt aligns with `ContentPlan.cta_direction`.
+8. **Hashtags**: Validates hashtag counts and formats against platform standards.
+9. **Originality & Repetition**: Detects verbatim duplicate sentences or excessive filler.
 
-### 3.3 Research Grounding & Anti-Hallucination
+### 3.3 Deterministic & LLM Decision Fusion Logic
 
-1. **Topic Anchoring**: The planned topic is validated against trends in `ResearchResponse.trends`.
-2. **Source Citation Grounding**: The agent verifies that all `source_references` match real URLs or domain sources in the retrieved research data. If unsupported URLs are returned, they are sanitized and mapped to the matching trend's legitimate source.
-3. **Research Fact vs. Content Strategy**: The agent clearly distinguishes factual source evidence from editorial perspective/angle.
-4. **Empty Research Guard**: Rejects ungrounded execution if `ResearchResponse.trends` is empty with `EmptyResearchError`.
+The final verdict is derived deterministically:
+$$\text{Final Decision} = \begin{cases} \text{REVISE} & \text{if any deterministic check fails or deterministic issue is found} \\ \text{REVISE} & \text{if LLM evaluation recommends REVISE or finds defects} \\ \text{APPROVED} & \text{if all deterministic checks and LLM quality checks pass with zero defects} \end{cases}$$
 
 ---
 
@@ -134,24 +161,22 @@ The **Planning Agent** bridges research and writing:
 | **Research Agent** | `backend/app/agents/research.py` | Topic discovery and source-grounded trend extraction |
 | **Planning Schemas** | `backend/app/models/planning.py` | `PlanningRequest`, `ContentPlan`, and planning exceptions |
 | **Planning Agent** | `backend/app/agents/planning.py` | Content strategy formulation and source-grounded planning |
+| **Content Schemas** | `backend/app/models/content.py` | `WriterRequest`, `SocialPost`, and writer exceptions |
+| **Writer Agent** | `backend/app/agents/writer.py` | Platform-tailored social copy generation, length validation, and citation grounding |
+| **Critic Schemas** | `backend/app/models/critic.py` | `ReviewRequest`, `CriticResult`, `QualityChecks`, and critic exceptions |
+| **Critic Agent** | `backend/app/agents/critic.py` | Quality assurance, source grounding verification, and APPROVED/REVISE decision logic |
 
 ---
 
 ## 5. Planned for Future Phases (Not Implemented Yet)
 
-The following components represent future architecture milestones and are **not** yet implemented in Phase 4:
+The following components represent future architecture milestones and are **not** yet implemented in Phase 6:
 
-### 5.1 Writer Agent (Phase 5)
-- Generates platform-specific social copy (Twitter/X threads, LinkedIn posts) implementing the `ContentPlan`.
+### 5.1 LangGraph Orchestration & Human-in-the-Loop (Phase 7)
+- Coordinates Research → Planning → Writer → Critic → Review/Revision Loop with StateGraph and conditional edges.
 
-### 5.2 Critic Agent (Phase 6)
-- Evaluates draft content against quality metrics, brand guidelines, and factual consistency.
-
-### 5.3 LangGraph Orchestration & Human-in-the-Loop (Phase 7)
-- Coordinates Research → Planning → Writer → Critic → Human Approval graph with state transitions.
-
-### 5.4 Database & Persistence Layer (Phase 8)
+### 5.2 Database & Persistence Layer (Phase 8)
 - SQLite with SQLAlchemy and Alembic migrations for local development; PostgreSQL for production.
 
-### 5.5 Frontend Application & Publishing (Phase 9)
+### 5.3 Frontend Application & Publishing (Phase 9)
 - React + Vite Single Page Application (SPA) and social media publishing engine with OAuth integrations.
