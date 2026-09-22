@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Any, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from backend.app.config import Settings, get_settings
 from backend.app.services.llm.base import LLMProvider
@@ -95,7 +95,7 @@ class LLMService:
         for attempt in range(1, self._max_retries + 1):
             try:
                 return await coroutine_func(*args, **kwargs)
-            except (LLMConfigurationError, LLMResponseError):
+            except (LLMConfigurationError, LLMResponseError, ValidationError):
                 # Non-transient errors: do not retry
                 raise
             except LLMProviderError as err:
@@ -107,11 +107,9 @@ class LLMService:
                     err,
                 )
                 if attempt < self._max_retries:
-                    # Bounded exponential backoff: 0.2s, 0.4s, 0.8s...
                     delay = 0.2 * (2 ** (attempt - 1))
                     await asyncio.sleep(delay)
             except Exception as err:
-                # Unexpected exceptions wrapped in LLMProviderError
                 last_exception = LLMProviderError(f"Unexpected error: {err}", original_error=err)
                 logger.error("Unexpected error in LLM execution: %s", err)
                 if attempt < self._max_retries:

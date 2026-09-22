@@ -6,9 +6,9 @@ An agentic AI web application engineered to streamline the full lifecycle of soc
 
 ## 📌 Current Development Phase
 
-> **Phase 2 — LLM Service & Provider Abstraction**
+> **Phase 4 — Planning Agent**
 >
-> The project has completed **Phase 1 (Project Foundation)** and **Phase 2 (LLM Service Layer)**. This phase establishes a decoupled, provider-agnostic LLM service abstraction with Groq (`ChatGroq`) as the initial implementation, native Pydantic structured output support, centralized configuration, and bounded retry error handling. Autonomous agents and LangGraph workflows will be built on top of this layer in subsequent phases.
+> The project has completed **Phase 1 (Project Foundation)**, **Phase 2 (LLM Service Layer)**, **Phase 3 (Research Agent)**, and **Phase 4 (Planning Agent)**. The platform now features autonomous topic discovery (Research Agent) and strategic content planning (Planning Agent) producing validated, source-grounded content strategy plans (`ContentPlan`). Copywriting, review, and orchestration will be implemented in subsequent phases.
 
 ---
 
@@ -18,37 +18,41 @@ The ultimate goal of the platform is to automate an intelligent content pipeline
 
 $$\text{Research} \longrightarrow \text{Planning} \longrightarrow \text{Writing} \longrightarrow \text{Critic} \longrightarrow \text{Human Approval} \longrightarrow \text{Publishing} \longrightarrow \text{Analytics} \longrightarrow \text{Memory}$$
 
-Future autonomous agents will include:
-- **Research Agent**: Trend analysis and source intelligence
-- **Planning Agent**: Content calendar and strategy design
-- **Writer Agent**: Platform-tailored copy generation
-- **Critic Agent**: Quality, policy, and brand voice verification
+### Agent Roadmap:
+- [x] **1. Research Agent**: Discovers current niche trends and extracts grounded insights
+- [x] **2. Planning Agent**: Formulates content strategy plans, angles, hooks, key points, and CTAs
+- [ ] **3. Writer Agent**: Platform-tailored copy generation
+- [ ] **4. Critic Agent**: Quality, policy, and brand voice verification
 
 ---
 
 ## 🏗️ System Architecture
 
-### LLM Service Layer (Phase 2)
-
-Future agents interact **only** with `LLMService`, completely isolated from provider-specific SDKs:
+### Multi-Agent Pipeline
 
 ```text
-Agent (Research / Writer / Critic)
+User / Niche Request
          │
          ▼
-    LLMService  (Bounded Retries & Factory)
+   ResearchAgent (Phase 3)
+     ├──> SearchTool (Tavily / Mock Web Search)
+     └──> LLMService (Provider-Agnostic Generation & Bounded Retries)
          │
          ▼
-   <<LLMProvider>>  (Abstract Interface)
+   ResearchResponse (Grounded Trends)
          │
          ▼
-    GroqProvider  (ChatGroq Adapter)
+   PlanningAgent (Phase 4)
+     └──> LLMService (Structured Content Strategy Generation)
+         │
+         ▼
+   ContentPlan (Topic, Angle, Hook, Key Points, CTA, Sources)
 ```
 
-- **Provider Agnostic**: Switch providers (e.g. from Groq to OpenAI or Anthropic) via configuration without touching agent logic.
-- **Structured Outputs**: Native generation of typed Pydantic models via `service.generate_structured(...)`.
-- **Bounded Retries**: Automated exponential backoff for transient upstream failures.
-- **Security**: Zero credential leakage in logs or exceptions.
+- **Source Grounding**: Every plan is anchored to a specific research trend with verified citations.
+- **Provider Decoupled**: Zero direct LLM vendor SDK dependencies in agent code.
+- **Strategic Separation**: Clear separation between *Research Evidence* (facts) and *Content Strategy* (angle/perspective).
+- **Resilience**: Layer-separated bounded retries for search, LLM inference, and agent validation.
 
 For complete architectural details, see [docs/architecture.md](docs/architecture.md).
 
@@ -60,10 +64,10 @@ For complete architectural details, see [docs/architecture.md](docs/architecture
 |---|---|---|
 | Language | Python 3.12 | Backend core language |
 | Web Framework | FastAPI | High-performance REST API |
-| ASGI Server | Uvicorn | Async HTTP server |
 | Configuration | Pydantic Settings | Environment and config management |
 | LLM Abstraction | LangChain Core & Groq | Provider-agnostic LLM integration |
 | Default LLM | Groq (`llama-3.3-70b-versatile`) | Fast, cost-efficient inference |
+| Web Research Tool | Tavily Search (`tavily-python`) | Real-time web intelligence |
 | Testing | Pytest, HTTPX & pytest-asyncio | Automated unit & endpoint tests |
 
 ---
@@ -74,28 +78,38 @@ For complete architectural details, see [docs/architecture.md](docs/architecture
 ai-social-media-automation/
 ├── backend/
 │   ├── app/
-│   │   ├── agents/          # Future AI agent implementations
+│   │   ├── agents/          # AI Agent Implementations
+│   │   │   ├── planning.py  # Planning Agent (Phase 4)
+│   │   │   └── research.py  # Research Agent (Phase 3)
 │   │   ├── api/             # Modular API routes
 │   │   │   └── v1/
 │   │   │       ├── health.py# Health check endpoint
 │   │   │       └── router.py# Central v1 API router
 │   │   ├── core/            # Core utilities (logging, etc.)
 │   │   │   └── logging.py
-│   │   ├── models/          # Future database models & schemas
-│   │   ├── services/        # Business logic & integrations
+│   │   ├── models/          # Domain Schemas
+│   │   │   ├── planning.py  # PlanningRequest, ContentPlan, exceptions
+│   │   │   └── research.py  # ResearchRequest, Trend, SearchResult, etc.
+│   │   ├── services/        # Business logic & LLM services
 │   │   │   └── llm/         # Centralized LLM Service Layer
 │   │   │       ├── base.py       # Abstract LLMProvider interface
 │   │   │       ├── exceptions.py # Domain exception hierarchy
 │   │   │       ├── service.py    # Central LLMService orchestrator
 │   │   │       └── providers/
 │   │   │           └── groq.py   # Groq provider implementation
-│   │   ├── tools/           # Future agent tool definitions
+│   │   ├── tools/           # External tool integrations
+│   │   │   └── research/    # Search tool abstraction & Tavily adapter
+│   │   │       ├── base.py       # Abstract SearchTool interface
+│   │   │       ├── mock.py       # Mock search tool for testing
+│   │   │       └── tavily.py     # Tavily search tool adapter
 │   │   ├── workflows/       # Future LangGraph workflows
 │   │   ├── config.py        # Centralized Pydantic settings
 │   │   └── main.py          # FastAPI application entry point
 │   ├── tests/
-│   │   ├── test_health.py      # Health endpoint unit tests
-│   │   └── test_llm_service.py # LLM service, retry, and mock provider tests
+│   │   ├── test_health.py         # Health endpoint unit tests
+│   │   ├── test_llm_service.py    # LLM service, retry, and mock provider tests
+│   │   ├── test_planning_agent.py # Planning Agent, schemas, and grounding tests
+│   │   └── test_research_agent.py # Research Agent, schemas, and search tool tests
 │   └── requirements.txt     # Backend dependencies
 ├── data/                    # Local data storage (.gitkeep)
 ├── docs/
@@ -144,16 +158,68 @@ Copy `.env.example` to create your local `.env` file:
 cp .env.example .env
 ```
 
-To enable live Groq inference in your local environment, add your key to `.env`:
+To enable live Groq and Tavily research in your local environment, add your API keys to `.env`:
 ```ini
 GROQ_API_KEY=gsk_your_groq_api_key_here
 LLM_PROVIDER=groq
 LLM_MODEL=llama-3.3-70b-versatile
 LLM_TEMPERATURE=0.2
-LLM_MAX_RETRIES=3
+
+TAVILY_API_KEY=tvly_your_tavily_api_key_here
+SEARCH_MAX_RETRIES=2
+PLANNING_MAX_RETRIES=2
 ```
 
-*(Note: Unit tests run offline using mocks and do NOT require an API key).*
+*(Note: Unit tests run completely offline using mocks and do NOT require API keys).*
+
+---
+
+## 💡 Example: Research → Planning Pipeline
+
+```python
+import asyncio
+from backend.app.agents.planning import PlanningAgent
+from backend.app.agents.research import ResearchAgent
+from backend.app.models.planning import PlanningRequest
+from backend.app.models.research import ResearchRequest
+
+async def main():
+    # 1. Discover trends with Research Agent
+    research_agent = ResearchAgent()
+    research_req = ResearchRequest(
+        niche="Artificial Intelligence",
+        audience="AI developers and students",
+        platform="linkedin",
+        keywords=["AI Agents", "Multi-Agent"],
+        max_results=3,
+    )
+    research_res = await research_agent.research(research_req)
+    print(f"Research discovered {research_res.total_results_found} trends.")
+
+    # 2. Formulate Content Strategy with Planning Agent
+    planning_agent = PlanningAgent()
+    planning_req = PlanningRequest(
+        research=research_res,
+        niche="Artificial Intelligence",
+        audience="AI developers and students",
+        platform="linkedin",
+        content_goal="educational",
+    )
+    plan = await planning_agent.plan(planning_req)
+
+    print("\n--- CONTENT PLAN ---")
+    print(f"Topic: {plan.topic}")
+    print(f"Angle: {plan.angle}")
+    print(f"Hook Direction: {plan.hook_direction}")
+    print("Key Points:")
+    for point in plan.key_points:
+        print(f"  - {point}")
+    print(f"CTA: {plan.cta_direction}")
+    print(f"Sources: {', '.join(plan.source_references)}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
 
 ---
 
@@ -165,15 +231,11 @@ Start the local development server with Uvicorn:
 uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Once running, interactive documentation is accessible at:
-- **Swagger UI**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- **ReDoc**: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
-
 ---
 
 ## 🧪 Running Tests
 
-Execute the automated test suite with pytest:
+Execute the full automated test suite with pytest:
 
 ```powershell
 pytest

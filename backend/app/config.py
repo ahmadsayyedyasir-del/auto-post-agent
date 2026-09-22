@@ -28,13 +28,20 @@ class Settings(BaseSettings):
     port: int = 8000
     api_v1_str: str = "/api/v1"
 
-    # LLM Service Configuration
+    # LLM Service Configuration (Phase 2)
     groq_api_key: str | None = None
     llm_provider: str = "groq"
     llm_model: str = "llama-3.3-70b-versatile"
     llm_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     llm_max_tokens: int | None = None
     llm_max_retries: int = Field(default=3, ge=1, le=10)
+
+    # Search & Research Tools Configuration (Phase 3)
+    tavily_api_key: str | None = None
+    search_max_retries: int = Field(default=2, ge=1, le=5)
+
+    # Planning Agent Configuration (Phase 4)
+    planning_max_retries: int = Field(default=2, ge=1, le=5)
 
 
 @lru_cache

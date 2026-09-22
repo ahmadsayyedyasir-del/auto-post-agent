@@ -8,9 +8,13 @@ The **AI Social Media Automation Platform** is an enterprise-grade agentic AI sy
 
 ## 1. Currently Implemented Architecture
 
-The codebase currently implements **Phase 1 (Project Foundation)** and **Phase 2 (LLM Service & Provider Abstraction)**.
+The codebase currently implements:
+- **Phase 1: Project Foundation** (FastAPI core, configuration, logging, health endpoints, pytest)
+- **Phase 2: LLM Service Layer** (Provider-agnostic LLM abstraction, Groq adapter, structured output, bounded retries)
+- **Phase 3: Research Agent** (Topic discovery, search tool abstraction, Tavily integration, source grounding, trend validation)
+- **Phase 4: Planning Agent** (Content strategy formulation, trend evaluation, hook/key-points/CTA design, source grounding)
 
-### 1.1 Foundation & Service Architecture
+### 1.1 System Architecture Diagram
 
 ```mermaid
 graph TD
@@ -21,24 +25,101 @@ graph TD
     FastAPI --> Logging[Centralized Logging: logging.basicConfig]
     Config --> EnvFile[Environment Variables: .env / .env.example]
 
-    Agent[Future Agent: Research / Writer / Critic] -->|generate / generate_structured| LLMService[Central LLMService]
-    LLMService -->|Bounded Retries & Factory| LLMProvider[<<interface>> LLMProvider]
-    LLMProvider <|.. GroqProvider[GroqProvider: ChatGroq]
-    LLMProvider <|.. FutureProvider[Future Providers: OpenAI / Anthropic]
+    ResearchRequest[ResearchRequest] --> ResearchAgent[1. Research Agent]
+    
+    subgraph Research Subsystem [Phase 3: Trend Discovery]
+        ResearchAgent -->|1. Formulate Query| SearchTool[<<interface>> SearchTool]
+        SearchTool <|.. TavilySearchTool[TavilySearchTool: AsyncTavilyClient]
+        SearchTool <|.. MockSearchTool[MockSearchTool: Offline & Testing]
+        SearchTool -->|2. Normalized SearchResult items| ResearchAgent
+        ResearchAgent -->|3. Grounded Prompt| LLMService[Central LLMService]
+        LLMService -->|4. Structured ExtractedTrends| ResearchAgent
+        ResearchAgent --> ResearchResponse[Structured ResearchResponse]
+    end
+
+    ResearchResponse --> PlanningRequest[PlanningRequest]
+    
+    subgraph Planning Subsystem [Phase 4: Content Strategy]
+        PlanningRequest --> PlanningAgent[2. Planning Agent]
+        PlanningAgent -->|Evaluate & Plan Prompt| LLMService
+        LLMService -->|Structured ContentPlan| PlanningAgent
+        PlanningAgent -->|Grounding & Source Verification| ContentPlan[Structured ContentPlan]
+    end
+
+    subgraph LLM Service Layer [Phase 2: Provider Agnostic]
+        LLMService -->|Bounded Retries & Factory| LLMProvider[<<interface>> LLMProvider]
+        LLMProvider <|.. GroqProvider[GroqProvider: ChatGroq]
+        LLMProvider <|.. FutureProvider[Future Providers: OpenAI / Anthropic]
+    end
+
     Config --> LLMService
+    Config --> TavilySearchTool
 ```
 
-### 1.2 Core Architectural Principles of the LLM Service Layer
+---
 
-1. **Provider Agnostic**: Agents never instantiate concrete LLM classes (e.g. `ChatGroq`) directly. Instead, agents interact exclusively with the unified `LLMService` interface. This allows seamless switching between LLM backends (e.g. Groq, OpenAI, Anthropic, local vLLM) by changing configuration alone without rewriting any agent code.
-2. **Centralized Configuration**: All LLM settings (`GROQ_API_KEY`, `LLM_PROVIDER`, `LLM_MODEL`, `LLM_TEMPERATURE`, `LLM_MAX_RETRIES`) are managed and validated via `pydantic-settings` in `backend/app/config.py`.
-3. **Structured Outputs**: Native support for Pydantic schema validation via `llm_service.generate_structured(schema=MySchema, prompt=...)`.
-4. **Resilience & Bounded Retries**: `LLMService` incorporates bounded exponential backoff retries for transient upstream provider failures, isolating retry logic from agent-level reasoning loops.
-5. **Security & Clean Errors**: API keys and authorization headers are never logged or exposed in error messages. Custom domain exceptions (`LLMConfigurationError`, `LLMProviderError`, `LLMResponseError`, `LLMRetryExhaustedError`) provide clean, actionable failure modes.
+## 2. Agent Responsibilities & Pipeline Workflow
 
-### 1.3 Implemented Modules
+The multi-agent content generation lifecycle establishes clear role separation across stages:
 
-| Module | Location | Purpose |
+```text
+┌─────────────────────────┐
+│   1. RESEARCH AGENT     │  Answers: "What is happening and what topics are relevant?"
+│        (Phase 3)        │  Produces: ResearchResponse (grounded trends & search evidence)
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   2. PLANNING AGENT     │  Answers: "What content should we create from this research?"
+│        (Phase 4)        │  Produces: ContentPlan (topic, angle, hook, key points, CTA)
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│    3. WRITER AGENT      │  Answers: "How should the actual post be written?"
+│    (Future Phase 5)     │  Produces: DraftPost (platform-tailored copy & formatting)
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│    4. CRITIC AGENT      │  Answers: "Is the copy accurate, brand-aligned, and engaging?"
+│    (Future Phase 6)     │  Produces: ReviewFeedback & Quality Score
+└─────────────────────────┘
+```
+
+---
+
+## 3. Planning Agent Architecture (Phase 4)
+
+### 3.1 Role & Boundaries
+
+The **Planning Agent** bridges research and writing:
+- **Inputs**: A structured `PlanningRequest` containing the `ResearchResponse` from Phase 3, plus target platform, audience, content goals, preferred tone, and content format.
+- **Outputs**: A validated `ContentPlan` detailing topic, angle, hook direction, structured key points, call to action, and verified source citations.
+- **Strict Boundary**: The Planning Agent does **not** generate final post copy or hashtags. It defines the editorial and strategic blueprint for the Writer Agent.
+
+### 3.2 Domain Schemas & Exceptions
+
+- **`PlanningRequest`**: Encapsulates `research: ResearchResponse`, `niche`, `audience`, `platform`, `language`, `content_goal`, `preferred_tone`, and `content_type`.
+- **`ContentPlan`**: Structured output including `topic`, `angle`, `platform`, `audience`, `language`, `content_type`, `tone`, `hook_direction`, `key_points` (validated list >= 1), `cta_direction`, `source_references`, `selected_trend_topic`, and `reasoning`.
+- **Custom Exceptions**:
+  - `PlanningError`: Base exception for planning domain.
+  - `EmptyResearchError`: Raised when input research contains no trends.
+  - `UngroundedPlanError`: Raised when output violates grounding rules.
+  - `PlanningValidationFailedError`: Raised when retry limits are exhausted.
+
+### 3.3 Research Grounding & Anti-Hallucination
+
+1. **Topic Anchoring**: The planned topic is validated against trends in `ResearchResponse.trends`.
+2. **Source Citation Grounding**: The agent verifies that all `source_references` match real URLs or domain sources in the retrieved research data. If unsupported URLs are returned, they are sanitized and mapped to the matching trend's legitimate source.
+3. **Research Fact vs. Content Strategy**: The agent clearly distinguishes factual source evidence from editorial perspective/angle.
+4. **Empty Research Guard**: Rejects ungrounded execution if `ResearchResponse.trends` is empty with `EmptyResearchError`.
+
+---
+
+## 4. Implemented Modules Overview
+
+| Subsystem | Module | Purpose |
 |---|---|---|
 | **Core App** | `backend/app/main.py` | FastAPI application initialization and lifespan management |
 | **Configuration** | `backend/app/config.py` | Type-safe settings with environment variable loading |
@@ -48,40 +129,29 @@ graph TD
 | **LLM Exceptions** | `backend/app/services/llm/exceptions.py` | Hierarchical domain exceptions for configuration, provider, and response errors |
 | **Groq Adapter** | `backend/app/services/llm/providers/groq.py` | `GroqProvider` implementing `LLMProvider` via LangChain's `ChatGroq` |
 | **LLM Orchestrator** | `backend/app/services/llm/service.py` | `LLMService` with provider registry and bounded backoff retries |
+| **Research Schemas** | `backend/app/models/research.py` | Pydantic models for inputs, search outputs, trends, and responses |
+| **Search Tools** | `backend/app/tools/research/` | Abstract `SearchTool`, `TavilySearchTool`, and `MockSearchTool` |
+| **Research Agent** | `backend/app/agents/research.py` | Topic discovery and source-grounded trend extraction |
+| **Planning Schemas** | `backend/app/models/planning.py` | `PlanningRequest`, `ContentPlan`, and planning exceptions |
+| **Planning Agent** | `backend/app/agents/planning.py` | Content strategy formulation and source-grounded planning |
 
 ---
 
-## 2. Planned for Future Phases (Not Implemented Yet)
+## 5. Planned for Future Phases (Not Implemented Yet)
 
-The following components represent future architecture milestones and are **not** yet implemented in Phase 2:
+The following components represent future architecture milestones and are **not** yet implemented in Phase 4:
 
-### 2.1 Agentic AI Pipeline (LangGraph)
-- **Research Agent**: Scrapes web sources and gathers real-time trend intelligence using search APIs (e.g., Tavily, SerpAPI).
-- **Planning Agent**: Formulates content outlines, schedules, angle strategies, and campaign plans.
-- **Writer Agent**: Generates platform-specific social copy (Twitter/X threads, LinkedIn posts) leveraging `LLMService`.
-- **Critic Agent**: Evaluates generated content for brand alignment, voice consistency, factual accuracy, and policy constraints.
-- **Human Approval (Human-in-the-Loop)**: Review dashboard where operators can inspect, edit, approve, or reject draft posts before queueing.
+### 5.1 Writer Agent (Phase 5)
+- Generates platform-specific social copy (Twitter/X threads, LinkedIn posts) implementing the `ContentPlan`.
 
-```mermaid
-graph LR
-    Research[1. Research Agent] --> Planning[2. Planning Agent]
-    Planning --> Writer[3. Writer Agent]
-    Writer --> Critic[4. Critic Agent]
-    Critic --> Approval{5. Human Approval}
-    Approval -->|Approved| Publishing[6. Publishing Engine]
-    Approval -->|Revision Requested| Writer
-    Publishing --> Analytics[7. Analytics Agent]
-    Analytics --> Memory[(8. System Memory)]
-    Memory -.-> Research
-```
+### 5.2 Critic Agent (Phase 6)
+- Evaluates draft content against quality metrics, brand guidelines, and factual consistency.
 
-### 2.2 Database & Persistence Layer
-- **Phase 3+ Initial**: SQLite with SQLAlchemy and Alembic migrations for local development.
-- **Production**: PostgreSQL for high-concurrency multi-tenant operations.
+### 5.3 LangGraph Orchestration & Human-in-the-Loop (Phase 7)
+- Coordinates Research → Planning → Writer → Critic → Human Approval graph with state transitions.
 
-### 2.3 Frontend Application
-- React + Vite Single Page Application (SPA) with responsive dashboard, approval queue, analytics visualizers, and agent monitor.
+### 5.4 Database & Persistence Layer (Phase 8)
+- SQLite with SQLAlchemy and Alembic migrations for local development; PostgreSQL for production.
 
-### 2.4 Social Media Integrations & Publishing
-- OAuth 2.0 authentications and API integrations for X (Twitter), LinkedIn, and additional platforms.
-- Background asynchronous worker queues (Celery / Redis / background tasks) for scheduled content dispatching.
+### 5.5 Frontend Application & Publishing (Phase 9)
+- React + Vite Single Page Application (SPA) and social media publishing engine with OAuth integrations.
