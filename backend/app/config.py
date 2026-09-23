@@ -54,6 +54,19 @@ class Settings(BaseSettings):
     checkpointer_type: Literal["memory", "sqlite", "postgres"] = "sqlite"
     checkpoint_db_path: str = "data/checkpoints.db"
 
+    # Social Media Publishing Configuration (Phase 10)
+    linkedin_client_id: str | None = None
+    linkedin_client_secret: str | None = None
+    linkedin_access_token: str | None = None
+    linkedin_author_urn: str | None = None
+    linkedin_api_version: str = "202401"
+    publishing_max_retries: int = Field(default=3, ge=1, le=10)
+    publishing_base_backoff_seconds: float = Field(default=1.0, ge=0.1, le=60.0)
+
+    # Social Media Scheduling Configuration (Phase 11)
+    scheduler_misfire_grace_time_seconds: int = Field(default=900, ge=60, le=86400)
+    scheduler_startup_recovery_enabled: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

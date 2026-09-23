@@ -11,6 +11,8 @@ from backend.app.db.session import Base
 
 if TYPE_CHECKING:
     from backend.app.db.models.feedback import Feedback
+    from backend.app.db.models.publication import Publication
+    from backend.app.db.models.schedule import Schedule
     from backend.app.db.models.workflow import WorkflowRun
 
 
@@ -61,6 +63,16 @@ class Post(Base):
         order_by="Revision.revision_number",
     )
     feedbacks: Mapped[list["Feedback"]] = relationship(
+        back_populates="post",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    publications: Mapped[list["Publication"]] = relationship(
+        back_populates="post",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    schedules: Mapped[list["Schedule"]] = relationship(
         back_populates="post",
         cascade="all, delete-orphan",
         lazy="selectin",

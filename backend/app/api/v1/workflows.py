@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.db.repositories.workflow_repo import WorkflowRepository
 from backend.app.db.session import get_db_session
 from backend.app.models.research import ResearchRequest
+from backend.app.publishing.schemas import PublicationResponseSchema
+from backend.app.scheduling.schemas import ScheduleResponseSchema
 from backend.app.services.workflow_service import WorkflowService
 from backend.app.workflows.state import HumanReviewAction, WorkflowStatus
 
@@ -99,6 +101,8 @@ class WorkflowDetailResponse(BaseModel):
     error_message: str | None
     posts: list[PostResponseSchema] = []
     feedbacks: list[FeedbackResponseSchema] = []
+    publications: list[PublicationResponseSchema] = []
+    schedules: list[ScheduleResponseSchema] = []
 
 
 def _format_workflow_response(wf: Any) -> WorkflowDetailResponse:
@@ -146,6 +150,46 @@ def _format_workflow_response(wf: Any) -> WorkflowDetailResponse:
         for f in getattr(wf, "feedbacks", [])
     ]
 
+    publications_data = [
+        PublicationResponseSchema(
+            id=pub.id,
+            workflow_run_id=pub.workflow_run_id,
+            post_id=pub.post_id,
+            platform=pub.platform,
+            status=pub.status,
+            idempotency_key=pub.idempotency_key,
+            external_post_id=pub.external_post_id,
+            external_url=pub.external_url,
+            attempt_count=pub.attempt_count,
+            last_attempt_at=pub.last_attempt_at,
+            published_at=pub.published_at,
+            error_code=pub.error_code,
+            error_message=pub.error_message,
+            created_at=pub.created_at,
+            updated_at=pub.updated_at,
+        )
+        for pub in getattr(wf, "publications", [])
+    ]
+
+    schedules_data = [
+        ScheduleResponseSchema(
+            id=sch.id,
+            workflow_run_id=sch.workflow_run_id,
+            post_id=sch.post_id,
+            platform=sch.platform,
+            scheduled_at=sch.scheduled_at,
+            timezone=sch.timezone,
+            status=sch.status,
+            job_id=sch.job_id,
+            attempt_count=sch.attempt_count,
+            last_error=sch.last_error,
+            executed_at=sch.executed_at,
+            created_at=sch.created_at,
+            updated_at=sch.updated_at,
+        )
+        for sch in getattr(wf, "schedules", [])
+    ]
+
     return WorkflowDetailResponse(
         id=wf.id,
         niche=wf.niche,
@@ -163,6 +207,8 @@ def _format_workflow_response(wf: Any) -> WorkflowDetailResponse:
         error_message=wf.error_message,
         posts=posts_data,
         feedbacks=feedbacks_data,
+        publications=publications_data,
+        schedules=schedules_data,
     )
 
 

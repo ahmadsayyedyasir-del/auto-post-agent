@@ -2,6 +2,8 @@
 
 from backend.app.db.models.feedback import Feedback
 from backend.app.db.models.post import Post, Revision
+from backend.app.db.models.publication import Publication
+from backend.app.db.models.schedule import Schedule
 from backend.app.db.models.workflow import WorkflowRun
 
 __all__ = [
@@ -9,4 +11,6 @@ __all__ = [
     "Post",
     "Revision",
     "Feedback",
+    "Publication",
+    "Schedule",
 ]

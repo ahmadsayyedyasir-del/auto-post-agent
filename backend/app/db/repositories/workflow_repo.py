@@ -22,7 +22,7 @@ class WorkflowRepository(BaseRepository[WorkflowRun]):
         super().__init__(WorkflowRun, session)
 
     async def get_with_relations(self, workflow_id: str) -> WorkflowRun | None:
-        """Fetch a workflow run including all related posts, revisions, and feedback."""
+        """Fetch a workflow run including all related posts, revisions, feedback, publications, and schedules."""
         stmt = (
             select(WorkflowRun)
             .where(WorkflowRun.id == workflow_id)
@@ -30,6 +30,8 @@ class WorkflowRepository(BaseRepository[WorkflowRun]):
                 selectinload(WorkflowRun.posts),
                 selectinload(WorkflowRun.revisions),
                 selectinload(WorkflowRun.feedbacks),
+                selectinload(WorkflowRun.publications),
+                selectinload(WorkflowRun.schedules),
             )
         )
         result = await self.session.execute(stmt)
@@ -44,6 +46,8 @@ class WorkflowRepository(BaseRepository[WorkflowRun]):
                 selectinload(WorkflowRun.posts),
                 selectinload(WorkflowRun.revisions),
                 selectinload(WorkflowRun.feedbacks),
+                selectinload(WorkflowRun.publications),
+                selectinload(WorkflowRun.schedules),
             )
         )
         bind = self.session.get_bind()
