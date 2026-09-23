@@ -27,7 +27,9 @@ class WorkflowStatus(str, Enum):
     WRITING = "WRITING"
     CRITIQUING = "CRITIQUING"
     WAITING_FOR_HUMAN_REVIEW = "WAITING_FOR_HUMAN_REVIEW"
+    HUMAN_REVIEW = "HUMAN_REVIEW"
     APPROVED = "APPROVED"
+    PUBLISHED = "PUBLISHED"
     COMPLETED = "COMPLETED"
     REJECTED = "REJECTED"
     FAILED = "FAILED"
@@ -53,4 +55,3 @@ class SocialWorkflowState(TypedDict, total=False):
     human_feedback: list[str] | None
     edited_content: str | None
     error: str | None
-

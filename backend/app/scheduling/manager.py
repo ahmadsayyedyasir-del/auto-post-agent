@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timezone
+from enum import Enum
 import logging
 from typing import Any
 
@@ -10,7 +11,7 @@ from apscheduler.triggers.date import DateTrigger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import Settings, get_settings
-from backend.app.db.models.schedule import Schedule
+from backend.app.db.models.schedule import Schedule, ScheduleStatus
 from backend.app.db.repositories.schedule_repo import ScheduleRepository
 from backend.app.db.repositories.workflow_repo import WorkflowRepository
 from backend.app.db.session import get_session_factory
@@ -23,93 +24,9 @@ _global_schedule_manager: "ScheduleManager | None" = None
 
 
 async def execute_scheduled_job(schedule_id: str) -> None:
-    """Triggered by APScheduler when a scheduled job reaches its execution timestamp."""
-    logger.info("Scheduler triggered execution for schedule '%s'", schedule_id)
-    session_factory = get_session_factory()
-
-    async with session_factory() as session:
-        schedule_repo = ScheduleRepository(session)
-        workflow_repo = WorkflowRepository(session)
-        publishing_service = PublishingService()
-
-        # 1. Fetch schedule and verify status
-        sched = await schedule_repo.get_by_id(schedule_id)
-        if not sched:
-            logger.warning("Scheduled job execution aborted: Schedule '%s' not found.", schedule_id)
-            return
-
-        if sched.status != "SCHEDULED":
-            logger.warning(
-                "Scheduled job execution skipped: Schedule '%s' is in '%s' status (expected 'SCHEDULED').",
-                schedule_id,
-                sched.status,
-            )
-            return
-
-        # 2. Transition status to RUNNING
-        await schedule_repo.record_execution_attempt(sched.id)
-        await session.commit()
-        await session.refresh(sched)
-
-        # 3. Verify workflow is still in APPROVED status at execution time
-        workflow = await workflow_repo.get_by_id(sched.workflow_run_id)
-        if not workflow or workflow.status != WorkflowStatus.APPROVED.value:
-            wf_status = getattr(workflow, "status", "NOT_FOUND")
-            err_msg = (
-                f"Execution aborted: workflow is not in APPROVED state at execution time "
-                f"(current status: '{wf_status}')."
-            )
-            logger.error("Schedule '%s' failed: %s", sched.id, err_msg)
-            await schedule_repo.update_status(
-                schedule_id=sched.id,
-                status="FAILED",
-                last_error=err_msg,
-                executed_at=datetime.now(timezone.utc),
-            )
-            await session.commit()
-            return
-
-        # 4. Invoke PublishingService
-        try:
-            publication = await publishing_service.publish_workflow_post(
-                workflow_id=sched.workflow_run_id,
-                session=session,
-                platform_override=sched.platform,
-            )
-
-            if publication.status == "PUBLISHED":
-                logger.info(
-                    "Schedule '%s' successfully published. Publication ID: '%s', External Post ID: '%s'",
-                    sched.id,
-                    publication.id,
-                    publication.external_post_id,
-                )
-                await schedule_repo.update_status(
-                    schedule_id=sched.id,
-                    status="COMPLETED",
-                    last_error=None,
-                    executed_at=publication.published_at or datetime.now(timezone.utc),
-                )
-            else:
-                err_msg = publication.error_message or "Platform publication failed."
-                logger.error("Schedule '%s' publication failed: %s", sched.id, err_msg)
-                await schedule_repo.update_status(
-                    schedule_id=sched.id,
-                    status="FAILED",
-                    last_error=err_msg,
-                    executed_at=datetime.now(timezone.utc),
-                )
-            await session.commit()
-
-        except Exception as err:
-            logger.exception("Schedule '%s' encountered an unexpected execution error: %s", sched.id, err)
-            await schedule_repo.update_status(
-                schedule_id=sched.id,
-                status="FAILED",
-                last_error=str(err),
-                executed_at=datetime.now(timezone.utc),
-            )
-            await session.commit()
+    """Module-level trigger callback executed by APScheduler when a scheduled job fires."""
+    manager = get_schedule_manager()
+    await manager.execute_scheduled_job(schedule_id)
 
 
 class ScheduleManager:
@@ -118,10 +35,28 @@ class ScheduleManager:
     def __init__(
         self,
         scheduler: AsyncIOScheduler | None = None,
+        session_factory: Any = None,
+        publishing_service: PublishingService | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.scheduler = scheduler or AsyncIOScheduler(timezone="UTC")
+        self._session_factory = session_factory
+        self._publishing_service = publishing_service
         self.settings = settings or get_settings()
+
+    @property
+    def session_factory(self) -> Any:
+        """Return the active session factory or lazily retrieve the application's session factory."""
+        if self._session_factory is not None:
+            return self._session_factory
+        return get_session_factory()
+
+    @property
+    def publishing_service(self) -> PublishingService:
+        """Return the injected publishing service or lazily instantiate one."""
+        if self._publishing_service is not None:
+            return self._publishing_service
+        return PublishingService()
 
     def start(self) -> None:
         """Start the background scheduler if not already running."""
@@ -147,7 +82,6 @@ class ScheduleManager:
         job_id: str,
     ) -> None:
         """Register or replace a one-time job in APScheduler at the specified UTC datetime."""
-        # Ensure UTC timezone
         run_dt = scheduled_at_utc
         if run_dt.tzinfo is None:
             run_dt = run_dt.replace(tzinfo=timezone.utc)
@@ -169,6 +103,10 @@ class ScheduleManager:
             schedule_id,
             run_dt.isoformat(),
         )
+
+    def get_job(self, job_id: str) -> Any:
+        """Retrieve a job by its unique identifier from the scheduler."""
+        return self.scheduler.get_job(job_id)
 
     def remove_schedule_job(self, job_id: str) -> bool:
         """Remove a job from the scheduler if registered."""
@@ -193,8 +131,104 @@ class ScheduleManager:
             job_id=job_id,
         )
 
-    async def recover_schedules(self, session: AsyncSession) -> int:
+    async def execute_scheduled_job(self, schedule_id: str) -> None:
+        """Execute a scheduled job: validate schedule state, check approval, call PublishingService."""
+        logger.info("Executing scheduled job for schedule '%s'", schedule_id)
+        session_factory = self.session_factory
+        publishing_service = self.publishing_service
+
+        async with session_factory() as session:
+            schedule_repo = ScheduleRepository(session)
+            workflow_repo = WorkflowRepository(session)
+
+            # 1. Fetch schedule and verify status
+            sched = await schedule_repo.get_by_id(schedule_id)
+            if not sched:
+                logger.warning("Scheduled job execution aborted: Schedule '%s' not found.", schedule_id)
+                return
+
+            if sched.status != ScheduleStatus.SCHEDULED.value:
+                logger.warning(
+                    "Scheduled job execution skipped: Schedule '%s' is in '%s' status (expected 'SCHEDULED').",
+                    schedule_id,
+                    sched.status,
+                )
+                return
+
+            # 2. Transition status to RUNNING
+            await schedule_repo.record_execution_attempt(sched.id)
+            await session.commit()
+            await session.refresh(sched)
+
+            # 3. Verify workflow is still in APPROVED status at execution time
+            workflow = await workflow_repo.get_by_id(sched.workflow_run_id)
+            if not workflow or workflow.status != WorkflowStatus.APPROVED.value:
+                wf_status = getattr(workflow, "status", "NOT_FOUND")
+                err_msg = (
+                    f"Execution aborted: workflow '{sched.workflow_run_id}' is not in APPROVED status "
+                    f"at execution time (current status: '{wf_status}')."
+                )
+                logger.error("Schedule '%s' failed: %s", sched.id, err_msg)
+                await schedule_repo.update_status(
+                    schedule_id=sched.id,
+                    status=ScheduleStatus.FAILED.value,
+                    last_error=err_msg,
+                    executed_at=datetime.now(timezone.utc),
+                )
+                await session.commit()
+                return
+
+            # 4. Invoke PublishingService
+            try:
+                publication = await publishing_service.publish_workflow_post(
+                    workflow_id=sched.workflow_run_id,
+                    session=session,
+                    platform_override=sched.platform,
+                )
+
+                if publication.status == "PUBLISHED":
+                    logger.info(
+                        "Schedule '%s' successfully published. Publication ID: '%s', External Post ID: '%s'",
+                        sched.id,
+                        publication.id,
+                        publication.external_post_id,
+                    )
+                    await schedule_repo.update_status(
+                        schedule_id=sched.id,
+                        status=ScheduleStatus.COMPLETED.value,
+                        last_error=None,
+                        executed_at=publication.published_at or datetime.now(timezone.utc),
+                    )
+                else:
+                    err_msg = publication.error_message or "Platform publication failed."
+                    logger.error("Schedule '%s' publication failed: %s", sched.id, err_msg)
+                    await schedule_repo.update_status(
+                        schedule_id=sched.id,
+                        status=ScheduleStatus.FAILED.value,
+                        last_error=err_msg,
+                        executed_at=datetime.now(timezone.utc),
+                    )
+                await session.commit()
+
+            except Exception as err:
+                logger.exception("Schedule '%s' encountered an unexpected execution error: %s", sched.id, err)
+                await schedule_repo.update_status(
+                    schedule_id=sched.id,
+                    status=ScheduleStatus.FAILED.value,
+                    last_error=str(err),
+                    executed_at=datetime.now(timezone.utc),
+                )
+                await session.commit()
+
+    async def recover_schedules(self, session: AsyncSession | None = None) -> int:
         """Recover and re-register active schedules from database upon application startup."""
+        if session is not None:
+            return await self._recover_schedules_with_session(session)
+        async with self.session_factory() as sess:
+            return await self._recover_schedules_with_session(sess)
+
+    async def _recover_schedules_with_session(self, session: AsyncSession) -> int:
+        """Internal helper for schedule recovery logic."""
         schedule_repo = ScheduleRepository(session)
         now_utc = datetime.now(timezone.utc)
         recovered_count = 0
@@ -208,8 +242,8 @@ class ScheduleManager:
             )
             await schedule_repo.update_status(
                 schedule_id=s.id,
-                status="FAILED",
-                last_error="Application terminated while job was in RUNNING state.",
+                status=ScheduleStatus.FAILED.value,
+                last_error="Orphaned running schedule on startup recovery: application terminated while in RUNNING state.",
                 executed_at=now_utc,
             )
         if orphaned:
@@ -241,7 +275,7 @@ class ScheduleManager:
                         sched.id,
                         int(elapsed_seconds),
                     )
-                    asyncio.create_task(execute_scheduled_job(sched.id))
+                    asyncio.create_task(self.execute_scheduled_job(sched.id))
                     recovered_count += 1
                 else:
                     logger.warning(
@@ -251,8 +285,8 @@ class ScheduleManager:
                     )
                     await schedule_repo.update_status(
                         schedule_id=sched.id,
-                        status="FAILED",
-                        last_error=f"Scheduled time elapsed while application was offline ({int(elapsed_seconds)}s overdue).",
+                        status=ScheduleStatus.FAILED.value,
+                        last_error=f"Overdue scheduled execution time elapsed while application was offline ({int(elapsed_seconds)}s overdue).",
                         executed_at=now_utc,
                     )
 

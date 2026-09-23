@@ -6,7 +6,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.db.models.schedule import Schedule
+from backend.app.db.models.schedule import Schedule, ScheduleStatus
 from backend.app.db.repositories.base import BaseRepository
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ class ScheduleRepository(BaseRepository[Schedule]):
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(Schedule, session)
 
-    async def get_by_workflow(self, workflow_id: str) -> list[Schedule]:
+    async def get_by_workflow_id(self, workflow_id: str) -> list[Schedule]:
         """Fetch all schedules created for a specific workflow run."""
         stmt = (
             select(Schedule)
@@ -27,6 +27,19 @@ class ScheduleRepository(BaseRepository[Schedule]):
         )
         res = await self.session.execute(stmt)
         return list(res.scalars().all())
+
+    async def get_by_workflow(self, workflow_id: str) -> list[Schedule]:
+        """Alias for get_by_workflow_id."""
+        return await self.get_by_workflow_id(workflow_id)
+
+    async def get_active_by_workflow_id(self, workflow_id: str) -> Schedule | None:
+        """Fetch the active (SCHEDULED or RUNNING) schedule for a workflow."""
+        stmt = select(Schedule).where(
+            Schedule.workflow_run_id == workflow_id,
+            Schedule.status.in_([ScheduleStatus.SCHEDULED.value, ScheduleStatus.RUNNING.value]),
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
 
     async def get_active_by_workflow_and_platform(
         self,
@@ -37,7 +50,7 @@ class ScheduleRepository(BaseRepository[Schedule]):
         stmt = select(Schedule).where(
             Schedule.workflow_run_id == workflow_id,
             Schedule.platform == platform.strip().lower(),
-            Schedule.status.in_(["SCHEDULED", "RUNNING"]),
+            Schedule.status.in_([ScheduleStatus.SCHEDULED.value, ScheduleStatus.RUNNING.value]),
         )
         res = await self.session.execute(stmt)
         return res.scalar_one_or_none()
@@ -51,7 +64,7 @@ class ScheduleRepository(BaseRepository[Schedule]):
         stmt = select(Schedule).where(
             Schedule.workflow_run_id == workflow_id,
             Schedule.platform == platform.strip().lower(),
-            Schedule.status.in_(["SCHEDULED", "RUNNING"]),
+            Schedule.status.in_([ScheduleStatus.SCHEDULED.value, ScheduleStatus.RUNNING.value]),
         )
         bind = self.session.get_bind()
         if bind is not None and getattr(bind.dialect, "name", "") != "sqlite":
@@ -70,7 +83,7 @@ class ScheduleRepository(BaseRepository[Schedule]):
         """Fetch all currently active SCHEDULED jobs across all workflows (used during restart recovery)."""
         stmt = (
             select(Schedule)
-            .where(Schedule.status == "SCHEDULED")
+            .where(Schedule.status == ScheduleStatus.SCHEDULED.value)
             .order_by(Schedule.scheduled_at.asc())
         )
         res = await self.session.execute(stmt)
@@ -78,7 +91,7 @@ class ScheduleRepository(BaseRepository[Schedule]):
 
     async def get_orphaned_running_schedules(self) -> list[Schedule]:
         """Fetch any schedule left in RUNNING state (e.g. from an abrupt process termination)."""
-        stmt = select(Schedule).where(Schedule.status == "RUNNING")
+        stmt = select(Schedule).where(Schedule.status == ScheduleStatus.RUNNING.value)
         res = await self.session.execute(stmt)
         return list(res.scalars().all())
 
@@ -108,6 +121,6 @@ class ScheduleRepository(BaseRepository[Schedule]):
         sched = await self.get_by_id(schedule_id)
         if sched:
             sched.attempt_count += 1
-            sched.status = "RUNNING"
+            sched.status = ScheduleStatus.RUNNING.value
             await self.session.flush()
         return sched

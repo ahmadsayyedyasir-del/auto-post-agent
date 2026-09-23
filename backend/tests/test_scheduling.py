@@ -268,32 +268,54 @@ async def test_schedule_repository_crud(db_session: AsyncSession, approved_workf
 async def test_schedule_unique_active_constraint(db_session: AsyncSession, approved_workflow_and_post):
     """Verify that multiple active schedules for the same workflow violate unique index."""
     wf, post = approved_workflow_and_post
+    wf_id = wf.id
+    post_id = post.id
     repo = ScheduleRepository(db_session)
 
     sch1 = Schedule(
-        workflow_run_id=wf.id,
-        post_id=post.id,
+        workflow_run_id=wf_id,
+        post_id=post_id,
         platform="linkedin",
         scheduled_at=datetime.now(timezone.utc) + timedelta(hours=1),
         timezone="UTC",
         status=ScheduleStatus.SCHEDULED.value,
-        job_id=f"job_1_{wf.id}",
+        job_id=f"job_1_{wf_id}",
     )
     await repo.create(sch1)
     await db_session.commit()
 
     sch2 = Schedule(
-        workflow_run_id=wf.id,
-        post_id=post.id,
+        workflow_run_id=wf_id,
+        post_id=post_id,
         platform="linkedin",
         scheduled_at=datetime.now(timezone.utc) + timedelta(hours=2),
         timezone="UTC",
         status=ScheduleStatus.SCHEDULED.value,
-        job_id=f"job_2_{wf.id}",
+        job_id=f"job_2_{wf_id}",
     )
-    await repo.create(sch2)
-
+    sch1_id = sch1.id
     with pytest.raises(Exception):
+        await repo.create(sch2)
+        await db_session.commit()
+    await db_session.rollback()
+
+    # Transition sch1 to RUNNING and verify a new SCHEDULED schedule is still blocked at DB level
+    sch1_refetched = await repo.get_by_id(sch1_id)
+    assert sch1_refetched is not None
+    sch1_refetched.status = ScheduleStatus.RUNNING.value
+    await db_session.commit()
+
+    sch3 = Schedule(
+        workflow_run_id=wf_id,
+        post_id=post_id,
+        platform="linkedin",
+        scheduled_at=datetime.now(timezone.utc) + timedelta(hours=3),
+        timezone="UTC",
+        status=ScheduleStatus.SCHEDULED.value,
+        job_id=f"job_3_{wf_id}",
+    )
+    with pytest.raises(Exception):
+        await repo.create(sch3)
         await db_session.commit()
     await db_session.rollback()
 
@@ -662,7 +684,7 @@ async def test_startup_recovery(session_factory, approved_workflow_and_post, tes
             job_id="job_future_123",
         )
         await repo.create(future_sch)
-        await session.flush()
+        await session.commit()
         future_id = future_sch.id
 
     # For overdue and orphaned tests, create another workflow

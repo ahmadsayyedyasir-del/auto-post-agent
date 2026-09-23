@@ -61,9 +61,18 @@ def upgrade() -> None:
     op.create_index("ix_schedules_scheduled_at", "schedules", ["scheduled_at"])
     op.create_index("ix_schedules_job_id", "schedules", ["job_id"], unique=True)
     op.create_index("ix_schedules_created_at", "schedules", ["created_at"])
+    op.create_index(
+        "uq_active_workflow_schedule",
+        "schedules",
+        ["workflow_run_id"],
+        unique=True,
+        postgresql_where=sa.text("status IN ('SCHEDULED', 'RUNNING')"),
+        sqlite_where=sa.text("status IN ('SCHEDULED', 'RUNNING')"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("uq_active_workflow_schedule", table_name="schedules")
     op.drop_index("ix_schedules_created_at", table_name="schedules")
     op.drop_index("ix_schedules_job_id", table_name="schedules")
     op.drop_index("ix_schedules_scheduled_at", table_name="schedules")

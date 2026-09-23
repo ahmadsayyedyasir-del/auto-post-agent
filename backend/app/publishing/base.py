@@ -62,6 +62,11 @@ class PublicationResult:
     error_message: str | None = None
     is_retryable: bool = False
     raw_response: dict[str, Any] | None = None
+    retryable: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.retryable is not None and not self.is_retryable:
+            object.__setattr__(self, "is_retryable", self.retryable)
 
 
 class PlatformError(Exception):

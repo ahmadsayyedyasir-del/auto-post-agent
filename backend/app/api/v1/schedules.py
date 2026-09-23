@@ -3,10 +3,11 @@
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.session import get_db_session
+from backend.app.scheduling.manager import get_schedule_manager
 from backend.app.scheduling.schemas import (
     CreateScheduleRequestSchema,
     ScheduleListResponseSchema,
@@ -18,6 +19,12 @@ from backend.app.scheduling.service import SchedulingService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/schedules", tags=["Schedules"])
+
+
+def _get_scheduling_service(request: Request) -> SchedulingService:
+    """Instantiate SchedulingService with the manager attached to app state or singleton."""
+    manager = getattr(request.app.state, "schedule_manager", None) or get_schedule_manager()
+    return SchedulingService(schedule_manager=manager)
 
 
 def _format_schedule_response(sched: Any) -> ScheduleResponseSchema:
@@ -47,27 +54,28 @@ def _format_schedule_response(sched: Any) -> ScheduleResponseSchema:
 )
 async def create_schedule(
     payload: CreateScheduleRequestSchema,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> ScheduleResponseSchema:
     """Register a new future publication schedule for an approved workflow."""
-    service = SchedulingService()
+    service = _get_scheduling_service(request)
     try:
         schedule = await service.create_schedule(
-            workflow_id=payload.workflow_id,
-            scheduled_at=payload.scheduled_at,
-            timezone_name=payload.timezone,
+            request=payload,
             session=session,
-            platform_override=payload.platform_override,
         )
         return _format_schedule_response(schedule)
     except ValueError as val_err:
         err_msg = str(val_err)
-        if "not found" in err_msg.lower():
+        err_lower = err_msg.lower()
+        if "not found" in err_lower:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=err_msg)
-        if "future" in err_msg.lower() or "timezone" in err_msg.lower():
-            raise HTTPException(status_code=422, detail=err_msg)
-        if "expected 'approved'" in err_msg.lower() or "already" in err_msg.lower():
+        if "not approved" in err_lower or "expected 'approved'" in err_lower:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err_msg)
+        if "already" in err_lower or "conflict" in err_lower:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err_msg)
+        if "past" in err_lower or "timezone" in err_lower:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
     except Exception as err:
         logger.exception("Failed to create schedule for workflow '%s': %s", payload.workflow_id, err)
@@ -83,13 +91,14 @@ async def create_schedule(
     summary="List all schedules with optional filters",
 )
 async def list_schedules(
+    request: Request,
     workflow_id: str | None = Query(default=None, description="Filter by workflow run ID"),
     status_filter: str | None = Query(default=None, alias="status", description="Filter by status (SCHEDULED, RUNNING, COMPLETED, FAILED, CANCELLED)"),
     platform: str | None = Query(default=None, description="Filter by platform"),
     session: AsyncSession = Depends(get_db_session),
 ) -> ScheduleListResponseSchema:
     """Retrieve all schedules filtered by workflow ID, status, or platform."""
-    service = SchedulingService()
+    service = _get_scheduling_service(request)
     if workflow_id:
         schedules = await service.get_schedules_for_workflow(workflow_id, session)
         if status_filter:
@@ -117,10 +126,11 @@ async def list_schedules(
 )
 async def get_schedule(
     schedule_id: str,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> ScheduleResponseSchema:
     """Fetch details of an individual schedule by its ID."""
-    service = SchedulingService()
+    service = _get_scheduling_service(request)
     sched = await service.get_schedule(schedule_id, session)
     if not sched:
         raise HTTPException(
@@ -138,26 +148,27 @@ async def get_schedule(
 async def update_schedule(
     schedule_id: str,
     payload: UpdateScheduleRequestSchema,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> ScheduleResponseSchema:
     """Update the target execution timestamp or timezone of an existing schedule."""
-    service = SchedulingService()
+    service = _get_scheduling_service(request)
     try:
         updated = await service.update_schedule(
             schedule_id=schedule_id,
+            request=payload,
             session=session,
-            scheduled_at=payload.scheduled_at,
-            timezone_name=payload.timezone,
         )
         return _format_schedule_response(updated)
     except ValueError as val_err:
         err_msg = str(val_err)
-        if "not found" in err_msg.lower():
+        err_lower = err_msg.lower()
+        if "not found" in err_lower:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=err_msg)
-        if "future" in err_msg.lower() or "timezone" in err_msg.lower():
-            raise HTTPException(status_code=422, detail=err_msg)
-        if "completed" in err_msg.lower() or "running" in err_msg.lower():
+        if "completed" in err_lower or "running" in err_lower:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err_msg)
+        if "past" in err_lower or "timezone" in err_lower or "cannot" in err_lower:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
     except Exception as err:
         logger.exception("Failed to update schedule '%s': %s", schedule_id, err)
@@ -174,18 +185,20 @@ async def update_schedule(
 )
 async def cancel_schedule(
     schedule_id: str,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> ScheduleResponseSchema:
     """Cancel an active schedule prior to its execution."""
-    service = SchedulingService()
+    service = _get_scheduling_service(request)
     try:
         cancelled = await service.cancel_schedule(schedule_id, session)
         return _format_schedule_response(cancelled)
     except ValueError as val_err:
         err_msg = str(val_err)
-        if "not found" in err_msg.lower():
+        err_lower = err_msg.lower()
+        if "not found" in err_lower:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=err_msg)
-        if "completed" in err_msg.lower() or "running" in err_msg.lower():
+        if "completed" in err_lower or "running" in err_lower:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err_msg)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
     except Exception as err:
@@ -203,18 +216,20 @@ async def cancel_schedule(
 )
 async def run_schedule_now(
     schedule_id: str,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> ScheduleResponseSchema:
     """Trigger immediate publishing execution for a scheduled post."""
-    service = SchedulingService()
+    service = _get_scheduling_service(request)
     try:
         executed = await service.run_schedule_now(schedule_id, session)
         return _format_schedule_response(executed)
     except ValueError as val_err:
         err_msg = str(val_err)
-        if "not found" in err_msg.lower():
+        err_lower = err_msg.lower()
+        if "not found" in err_lower:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=err_msg)
-        if "already" in err_msg.lower() or "running" in err_msg.lower() or "completed" in err_msg.lower():
+        if "already" in err_lower or "running" in err_lower or "completed" in err_lower:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err_msg)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
     except Exception as err:

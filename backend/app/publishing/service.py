@@ -83,8 +83,8 @@ class PublishingService:
         if not workflow:
             raise ValueError(f"Workflow '{workflow_id}' not found.")
 
-        # 2. Verify workflow status is APPROVED
-        if workflow.status != WorkflowStatus.APPROVED.value:
+        # 2. Verify workflow status is APPROVED (or already PUBLISHED for idempotent re-runs)
+        if workflow.status not in (WorkflowStatus.APPROVED.value, WorkflowStatus.PUBLISHED.value):
             raise ValueError(
                 f"Cannot publish workflow '{workflow_id}': status is '{workflow.status}', "
                 f"expected '{WorkflowStatus.APPROVED.value}'."
@@ -264,6 +264,11 @@ class PublishingService:
                         published_at=result.published_at or datetime.now(timezone.utc),
                         error_code=None,
                         error_message=None,
+                    )
+                    wf_repo = WorkflowRepository(session)
+                    await wf_repo.update_status(
+                        workflow_id=publication.workflow_run_id,
+                        status=WorkflowStatus.PUBLISHED.value,
                     )
                     await session.commit()
                     await session.refresh(publication)
