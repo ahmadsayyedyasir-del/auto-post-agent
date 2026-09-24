@@ -84,3 +84,10 @@ ehthumbs.db
 # Logs
 *.log
 logs/
+
+# Frontend / Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
