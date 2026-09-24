@@ -68,7 +68,19 @@ async def api_client(api_db_engine):
             finally:
                 await session.close()
 
+    from backend.app.api.v1.dependencies import get_current_active_user, get_current_user
+    from backend.app.db.models.user import User
+
+    test_user = User(
+        id="test-user-id-0000",
+        email="testuser@example.com",
+        hashed_password="mockhashedpassword",
+        is_active=True,
+    )
+
     app.dependency_overrides[get_db_session] = override_get_db
+    app.dependency_overrides[get_current_user] = lambda: test_user
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

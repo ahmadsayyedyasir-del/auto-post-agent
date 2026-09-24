@@ -1,8 +1,13 @@
 """Pytest configuration and environment shims for Windows Application Control environments."""
 
+import os
 import sys
 import types
 import hashlib
+
+# Provide test defaults for security settings in test suite
+os.environ.setdefault("JWT_SECRET_KEY", "test_jwt_secret_key_for_testing_purposes_only_32_bytes")
+os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
 
 # Provide a pure-Python fallback for xxhash if the C-extension .pyd is blocked by OS policy
 if "xxhash" not in sys.modules:

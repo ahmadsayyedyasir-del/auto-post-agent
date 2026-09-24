@@ -67,13 +67,36 @@ class PublishingService:
         """Generate deterministic idempotency key for workflow post on target platform."""
         return f"pub_{workflow_id}_{post_id}_{platform.strip().lower()}"
 
+    async def _resolve_credentials(
+        self,
+        platform: str,
+        user_id: str | None,
+        session: AsyncSession,
+    ) -> PlatformCredentials:
+        """Resolve platform credentials for user, falling back to configured resolver.
+
+        SECURITY: Resolved PlatformCredentials object must never be placed into
+        LangGraph state, logged, or serialized. It is used only within this request scope.
+        """
+        if user_id:
+            from backend.app.publishing.credentials import AsyncCredentialResolver
+            resolver = AsyncCredentialResolver(settings=self.settings, allow_env_fallback=True)
+            return await resolver.resolve(platform=platform, user_id=user_id, session=session)
+        # Legacy/unauthenticated path: use configured credential resolver
+        return self.credential_resolver.resolve(platform)
+
     async def publish_workflow_post(
         self,
         workflow_id: str,
         session: AsyncSession,
         platform_override: str | None = None,
+        user_id: str | None = None,
     ) -> Publication:
-        """Execute publishing workflow for an approved content post with idempotency and retry guards."""
+        """Execute publishing workflow for an approved content post with idempotency and retry guards.
+
+        Phase 12: Accepts optional user_id for per-user credential resolution.
+        Credentials are resolved at the service boundary and NEVER passed to LangGraph state.
+        """
         workflow_repo = WorkflowRepository(session)
         post_repo = PostRepository(session)
         pub_repo = PublicationRepository(session)
@@ -103,7 +126,11 @@ class PublishingService:
 
         # 5. Resolve platform adapter & credentials before creating DB records
         publisher = self.registry.get(effective_platform)
-        credentials = self.credential_resolver.resolve(effective_platform)
+        credentials = await self._resolve_credentials(
+            platform=effective_platform,
+            user_id=user_id,
+            session=session,
+        )
 
         # 6. Idempotency Check & Publication record creation
         idempotency_key = self.generate_idempotency_key(
@@ -177,8 +204,12 @@ class PublishingService:
         self,
         publication_id: str,
         session: AsyncSession,
+        user_id: str | None = None,
     ) -> Publication:
-        """Retry a previously failed publication."""
+        """Retry a previously failed publication.
+
+        Phase 12: Accepts optional user_id for per-user credential resolution.
+        """
         pub_repo = PublicationRepository(session)
         post_repo = PostRepository(session)
         workflow_repo = WorkflowRepository(session)
@@ -205,7 +236,11 @@ class PublishingService:
             )
 
         publisher = self.registry.get(publication.platform)
-        credentials = self.credential_resolver.resolve(publication.platform)
+        credentials = await self._resolve_credentials(
+            platform=publication.platform,
+            user_id=user_id,
+            session=session,
+        )
 
         pub_request = PublishingRequest(
             content=post.content,

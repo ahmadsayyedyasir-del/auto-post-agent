@@ -15,7 +15,18 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from backend.app.config import get_settings
 from backend.app.db.session import Base
-from backend.app.db.models import Feedback, Post, Publication, Revision, Schedule, WorkflowRun  # noqa: F401
+from backend.app.db.models import (  # noqa: F401
+    Feedback,
+    PlatformCredential,
+    Post,
+    Publication,
+    RefreshToken,
+    Revision,
+    Schedule,
+    User,
+    WorkflowRun,
+)
+
 
 config = context.config
 

@@ -65,6 +65,7 @@ class WorkflowService:
         request: ResearchRequest,
         session: AsyncSession,
         checkpointer: BaseCheckpointSaver | None = None,
+        user_id: str | None = None,
     ) -> WorkflowRun:
         """Initialize and execute a new workflow until the human review checkpoint is reached."""
         workflow_repo = WorkflowRepository(session)
@@ -73,6 +74,7 @@ class WorkflowService:
 
         # 1. Create initial WorkflowRun entity in DB
         workflow_run = WorkflowRun(
+            user_id=user_id,
             niche=request.niche,
             target_platform=request.platform,
             audience=request.audience,

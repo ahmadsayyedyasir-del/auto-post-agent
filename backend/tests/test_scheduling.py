@@ -803,7 +803,18 @@ async def test_api_create_schedule_success(
         async with session_factory() as session:
             yield session
 
+    from backend.app.api.v1.dependencies import get_current_active_user
+    from backend.app.db.models.user import User
+
+    test_user = User(
+        id="test-user-id-0000",
+        email="testuser@example.com",
+        hashed_password="mockhashedpassword",
+        is_active=True,
+    )
+
     app.dependency_overrides[get_db_session] = override_get_db
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
 
     # Attach manager to app.state
     manager = ScheduleManager(session_factory=session_factory, publishing_service=test_publishing_service)
@@ -870,7 +881,16 @@ async def test_api_schedule_run_now(
     async_engine, approved_workflow_and_post, test_publishing_service, mock_publisher
 ):
     """Test POST /api/v1/schedules/{id}/run manual trigger endpoint."""
+    from backend.app.api.v1.dependencies import get_current_active_user
+    from backend.app.db.models.user import User
     from backend.app.db.session import get_db_session
+
+    test_user = User(
+        id="test-user-id-0000",
+        email="testuser@example.com",
+        hashed_password="mockhashedpassword",
+        is_active=True,
+    )
 
     wf, post = approved_workflow_and_post
 
@@ -885,6 +905,7 @@ async def test_api_schedule_run_now(
             yield session
 
     app.dependency_overrides[get_db_session] = override_get_db
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
 
     manager = ScheduleManager(session_factory=session_factory, publishing_service=test_publishing_service)
     manager.start()
@@ -919,7 +940,16 @@ async def test_api_schedule_error_responses(
     async_engine, approved_workflow_and_post, unapproved_workflow_and_post, test_publishing_service
 ):
     """Test API error status codes for validation, unapproved workflow, and non-existent schedule."""
+    from backend.app.api.v1.dependencies import get_current_active_user
+    from backend.app.db.models.user import User
     from backend.app.db.session import get_db_session
+
+    test_user = User(
+        id="test-user-id-0000",
+        email="testuser@example.com",
+        hashed_password="mockhashedpassword",
+        is_active=True,
+    )
 
     approved_wf, _ = approved_workflow_and_post
     unapproved_wf, _ = unapproved_workflow_and_post
@@ -935,6 +965,7 @@ async def test_api_schedule_error_responses(
             yield session
 
     app.dependency_overrides[get_db_session] = override_get_db
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
 
     manager = ScheduleManager(session_factory=session_factory, publishing_service=test_publishing_service)
     manager.start()

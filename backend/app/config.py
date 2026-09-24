@@ -67,6 +67,22 @@ class Settings(BaseSettings):
     scheduler_misfire_grace_time_seconds: int = Field(default=900, ge=60, le=86400)
     scheduler_startup_recovery_enabled: bool = True
 
+    # Authentication & Security Configuration (Phase 12)
+    # JWT
+    jwt_secret_key: str = Field(
+        default="",
+        description="Secret key for signing JWT tokens. Set a strong random value in production.",
+    )
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = Field(default=30, ge=1, le=10080)
+    jwt_refresh_token_expire_days: int = Field(default=7, ge=1, le=90)
+
+    # Platform Credential Encryption (Fernet symmetric key, 32 url-safe base64-encoded bytes)
+    credential_encryption_key: str = Field(
+        default="",
+        description="Fernet base64 symmetric key for encrypting stored platform credentials.",
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

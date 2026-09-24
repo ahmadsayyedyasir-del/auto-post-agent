@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 import uuid
 
-from sqlalchemy import DateTime, Integer, JSON, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db.session import Base
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from backend.app.db.models.post import Post, Revision
     from backend.app.db.models.publication import Publication
     from backend.app.db.models.schedule import Schedule
+    from backend.app.db.models.user import User
 
 
 class WorkflowRun(Base):
@@ -25,6 +26,13 @@ class WorkflowRun(Base):
         String(36),
         primary_key=True,
         default=lambda: str(uuid.uuid4()),
+    )
+    # Phase 12: nullable for backward compatibility with legacy workflow records
+    user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     niche: Mapped[str] = mapped_column(String(255), nullable=False)
     target_platform: Mapped[str] = mapped_column(String(50), nullable=False, default="linkedin")
@@ -79,3 +87,5 @@ class WorkflowRun(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    # Phase 12: owner reference (nullable)
+    user: Mapped["User | None"] = relationship(back_populates="workflow_runs")

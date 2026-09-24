@@ -1,4 +1,10 @@
-"""FastAPI router endpoints for Workflow management, HITL review, and revision history."""
+"""FastAPI router endpoints for Workflow management, HITL review, and revision history.
+
+Phase 12: All endpoints now require authentication. Workflows are owned by users.
+- Users can only view/modify their own workflows.
+- Legacy workflows (user_id=None) are accessible only by any authenticated user (backward compat).
+- Returns 404 (not 403) for workflows owned by other users to prevent enumeration.
+"""
 
 import logging
 from typing import Any
@@ -7,6 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.v1.dependencies import get_current_active_user
+from backend.app.db.models.user import User
 from backend.app.db.repositories.workflow_repo import WorkflowRepository
 from backend.app.db.session import get_db_session
 from backend.app.models.research import ResearchRequest
@@ -212,8 +220,24 @@ def _format_workflow_response(wf: Any) -> WorkflowDetailResponse:
     )
 
 
+def _check_workflow_ownership(workflow: Any, current_user: User) -> None:
+    """Enforce ownership: raise 404 if workflow belongs to a different user.
+
+    Phase 12 authorization rule:
+    - Workflow with user_id=None: accessible by any authenticated user (legacy compat).
+    - Workflow with user_id set: must match current_user.id, else 404.
+
+    Returns 404 instead of 403 to prevent workflow ID enumeration.
+    """
+    if workflow.user_id is not None and workflow.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow.id}' not found.",
+        )
+
+
 # ------------------------------------------------------------------------------
-# API Endpoints
+# API Endpoints (Phase 12: all require authentication)
 # ------------------------------------------------------------------------------
 
 
@@ -225,12 +249,13 @@ def _format_workflow_response(wf: Any) -> WorkflowDetailResponse:
 )
 async def start_workflow(
     request: ResearchRequest,
+    current_user: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> WorkflowDetailResponse:
     """Start workflow execution pipeline. Runs through Research -> Planning -> Writer -> Critic until Human Review."""
     service = WorkflowService()
     try:
-        workflow = await service.start_workflow(request, session)
+        workflow = await service.start_workflow(request, session, user_id=current_user.id)
         return _format_workflow_response(workflow)
     except Exception as err:
         logger.exception("Failed to start workflow: %s", err)
@@ -247,6 +272,7 @@ async def start_workflow(
 )
 async def get_workflow(
     workflow_id: str,
+    current_user: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> WorkflowDetailResponse:
     """Fetch complete workflow record, current status, and generated draft/revisions."""
@@ -257,6 +283,7 @@ async def get_workflow(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow '{workflow_id}' not found.",
         )
+    _check_workflow_ownership(workflow, current_user)
     return _format_workflow_response(workflow)
 
 
@@ -268,6 +295,7 @@ async def get_workflow(
 async def submit_review(
     workflow_id: str,
     payload: HumanReviewPayload,
+    current_user: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> WorkflowDetailResponse:
     """Resume a paused workflow by submitting a human review action.
@@ -277,6 +305,16 @@ async def submit_review(
     - **REJECT**: Terminates workflow.
     - **EDIT**: Directly edits text and submits to CriticAgent for quality verification.
     """
+    # Ownership check before processing review
+    repo = WorkflowRepository(session)
+    workflow = await repo.get_with_relations(workflow_id)
+    if not workflow:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_id}' not found.",
+        )
+    _check_workflow_ownership(workflow, current_user)
+
     service = WorkflowService()
     try:
         updated_workflow = await service.submit_human_review(
@@ -309,6 +347,7 @@ async def submit_review(
 )
 async def get_revisions(
     workflow_id: str,
+    current_user: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[RevisionResponseSchema]:
     """Fetch complete revision timeline for all posts in a workflow."""
@@ -319,6 +358,7 @@ async def get_revisions(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow '{workflow_id}' not found.",
         )
+    _check_workflow_ownership(workflow, current_user)
 
     all_revisions: list[RevisionResponseSchema] = []
     for post in workflow.posts:
@@ -343,20 +383,35 @@ async def get_revisions(
 @router.get(
     "",
     response_model=list[WorkflowDetailResponse],
-    summary="List workflows filtered by status",
+    summary="List workflows filtered by status (returns only workflows owned by the authenticated user)",
 )
 async def list_workflows(
     status_filter: str | None = Query(default=None, alias="status"),
+    current_user: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[WorkflowDetailResponse]:
-    """List workflow runs with optional status filtering."""
-    repo = WorkflowRepository(session)
-    if status_filter:
-        workflows = await repo.get_by_status(status_filter.upper())
-    else:
-        workflows = await repo.get_all()
+    """List workflow runs with optional status filtering.
 
-    # Hydrate relationships
+    Phase 12: Returns only workflows owned by the authenticated user,
+    plus legacy workflows (user_id=None) for backward compatibility.
+    """
+    from sqlalchemy import or_, select
+    from backend.app.db.models.workflow import WorkflowRun
+
+    stmt = select(WorkflowRun).where(
+        or_(
+            WorkflowRun.user_id == current_user.id,
+            WorkflowRun.user_id == None,  # noqa: E711  -- legacy records
+        )
+    ).order_by(WorkflowRun.created_at.desc())
+
+    if status_filter:
+        stmt = stmt.where(WorkflowRun.status == status_filter.upper())
+
+    result = await session.execute(stmt)
+    workflows = list(result.scalars().all())
+
+    repo = WorkflowRepository(session)
     results = []
     for wf in workflows:
         hydrated = await repo.get_with_relations(wf.id)

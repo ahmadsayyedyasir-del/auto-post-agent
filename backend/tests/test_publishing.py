@@ -685,7 +685,18 @@ async def test_api_publish_workflow_success(async_engine, approved_workflow_and_
         async with session_factory() as session:
             yield session
 
+    from backend.app.api.v1.dependencies import get_current_active_user
+    from backend.app.db.models.user import User
+
+    test_user = User(
+        id="test-user-id-0000",
+        email="testuser@example.com",
+        hashed_password="mockhashedpassword",
+        is_active=True,
+    )
+
     app.dependency_overrides[get_db_session] = override_get_db
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
@@ -729,7 +740,16 @@ async def test_api_publish_workflow_success(async_engine, approved_workflow_and_
 @pytest.mark.asyncio
 async def test_api_publish_unapproved_workflow_conflict(async_engine):
     """Test that POST /api/v1/workflows/{id}/publish returns 409 Conflict when unapproved."""
+    from backend.app.api.v1.dependencies import get_current_active_user
+    from backend.app.db.models.user import User
     from backend.app.db.session import get_db_session
+
+    test_user = User(
+        id="test-user-id-0000",
+        email="testuser@example.com",
+        hashed_password="mockhashedpassword",
+        is_active=True,
+    )
 
     session_factory = async_sessionmaker(bind=async_engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -749,6 +769,7 @@ async def test_api_publish_unapproved_workflow_conflict(async_engine):
             yield session
 
     app.dependency_overrides[get_db_session] = override_get_db
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
@@ -764,7 +785,16 @@ async def test_api_publish_unapproved_workflow_conflict(async_engine):
 @pytest.mark.asyncio
 async def test_api_publish_nonexistent_workflow_not_found(async_engine):
     """Test that POST /api/v1/workflows/{id}/publish returns 404 for invalid ID."""
+    from backend.app.api.v1.dependencies import get_current_active_user
+    from backend.app.db.models.user import User
     from backend.app.db.session import get_db_session
+
+    test_user = User(
+        id="test-user-id-0000",
+        email="testuser@example.com",
+        hashed_password="mockhashedpassword",
+        is_active=True,
+    )
 
     session_factory = async_sessionmaker(bind=async_engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -773,6 +803,7 @@ async def test_api_publish_nonexistent_workflow_not_found(async_engine):
             yield session
 
     app.dependency_overrides[get_db_session] = override_get_db
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

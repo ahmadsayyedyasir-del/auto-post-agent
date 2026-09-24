@@ -184,6 +184,7 @@ class ScheduleManager:
                     workflow_id=sched.workflow_run_id,
                     session=session,
                     platform_override=sched.platform,
+                    user_id=workflow.user_id,
                 )
 
                 if publication.status == "PUBLISHED":
