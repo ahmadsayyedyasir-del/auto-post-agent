@@ -1,16 +1,24 @@
 """Centralized application configuration management using pydantic-settings."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Base directory paths for deterministic file resolution
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = _BACKEND_DIR.parent
+_DEFAULT_DB_PATH = (_PROJECT_ROOT / "social_media.db").as_posix()
+_DEFAULT_DATABASE_URL = f"sqlite+aiosqlite:///{_DEFAULT_DB_PATH}"
+_DEFAULT_CHECKPOINT_DB_PATH = (_PROJECT_ROOT / "data" / "checkpoints.db").as_posix()
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables or .env file."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(_PROJECT_ROOT / ".env", ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -44,7 +52,7 @@ class Settings(BaseSettings):
     planning_max_retries: int = Field(default=2, ge=1, le=5)
 
     # Database & Persistence Configuration (Phase 8)
-    database_url: str = "sqlite+aiosqlite:///./social_media.db"
+    database_url: str = _DEFAULT_DATABASE_URL
     database_echo: bool = False
     database_pool_size: int = Field(default=5, ge=1, le=50)
     database_max_overflow: int = Field(default=10, ge=0, le=50)
@@ -52,7 +60,7 @@ class Settings(BaseSettings):
 
     # LangGraph HITL Checkpoint Configuration (Phase 9)
     checkpointer_type: Literal["memory", "sqlite", "postgres"] = "sqlite"
-    checkpoint_db_path: str = "data/checkpoints.db"
+    checkpoint_db_path: str = _DEFAULT_CHECKPOINT_DB_PATH
 
     # Social Media Publishing Configuration (Phase 10)
     linkedin_client_id: str | None = None

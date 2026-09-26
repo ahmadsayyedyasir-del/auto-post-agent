@@ -4,7 +4,7 @@ import { Input } from '../ui/Input';
 import { Select } from '../ui/Select';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
-import { Sparkles, Compass } from 'lucide-react';
+import { Sparkles, Compass, Zap } from 'lucide-react';
 
 export interface WorkflowFormProps {
   onSubmit: (data: ResearchRequest) => Promise<void>;
@@ -13,6 +13,7 @@ export interface WorkflowFormProps {
 
 export const WorkflowForm: React.FC<WorkflowFormProps> = ({ onSubmit, isLoading = false }) => {
   const [niche, setNiche] = useState('');
+  const [autoDiscover, setAutoDiscover] = useState(false);
   const [platform, setPlatform] = useState('linkedin');
   const [audience, setAudience] = useState('Tech Founders & Engineers');
   const [language, setLanguage] = useState('English');
@@ -22,14 +23,15 @@ export const WorkflowForm: React.FC<WorkflowFormProps> = ({ onSubmit, isLoading 
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!niche.trim()) {
-      setError('Please provide a research niche or topic keyword.');
+    if (!autoDiscover && !niche.trim()) {
+      setError('Please provide a research niche/topic, or enable AI auto-discovery.');
       return;
     }
     setError(null);
 
     await onSubmit({
-      niche: niche.trim(),
+      niche: niche.trim() || undefined,
+      auto_discover: autoDiscover,
       platform,
       audience: audience.trim(),
       language,
@@ -43,14 +45,55 @@ export const WorkflowForm: React.FC<WorkflowFormProps> = ({ onSubmit, isLoading 
       <form onSubmit={handleSubmit}>
         <Input
           label="Research Niche / Topic Keywords"
-          placeholder="e.g., Autonomous AI Agents in Enterprise Software"
+          placeholder={autoDiscover ? 'Optional — AI will discover a trending topic' : 'e.g., Autonomous AI Agents in Enterprise Software'}
           value={niche}
           onChange={(e) => setNiche(e.target.value)}
           error={error || undefined}
-          helperText="The Research Agent will search real-time web trends and grounding sources for this niche."
+          helperText={autoDiscover
+            ? 'Leave empty for AI auto-discovery, or enter a topic to focus the research.'
+            : 'The Research Agent will search real-time web trends and grounding sources for this niche.'
+          }
           leftIcon={<Compass size={18} />}
-          required
+          required={!autoDiscover}
         />
+
+        {/* Auto-discovery toggle */}
+        <label
+          htmlFor="auto-discover-toggle"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-3)',
+            cursor: 'pointer',
+            padding: 'var(--space-3) var(--space-4)',
+            marginTop: 'var(--space-2)',
+            marginBottom: 'var(--space-4)',
+            background: autoDiscover ? 'rgba(99, 102, 241, 0.08)' : 'var(--bg-secondary)',
+            border: autoDiscover ? '1px solid rgba(99, 102, 241, 0.3)' : '1px solid var(--border-default)',
+            borderRadius: 'var(--radius-md)',
+            transition: 'all var(--transition-fast)',
+          }}
+        >
+          <input
+            id="auto-discover-toggle"
+            type="checkbox"
+            checked={autoDiscover}
+            onChange={(e) => {
+              setAutoDiscover(e.target.checked);
+              if (e.target.checked) setError(null);
+            }}
+            style={{ accentColor: 'var(--accent-primary)', width: '18px', height: '18px' }}
+          />
+          <Zap size={18} color={autoDiscover ? 'var(--accent-primary)' : 'var(--text-muted)'} />
+          <div>
+            <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
+              Let AI discover a trending topic automatically
+            </span>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+              The Research Agent will search current trends based on your platform, audience, and language to find the best topic.
+            </p>
+          </div>
+        </label>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 'var(--space-4)' }}>
           <Select
@@ -112,7 +155,7 @@ export const WorkflowForm: React.FC<WorkflowFormProps> = ({ onSubmit, isLoading 
 
         <div style={{ marginTop: 'var(--space-6)', display: 'flex', justifyContent: 'flex-end' }}>
           <Button type="submit" variant="primary" isLoading={isLoading} leftIcon={<Sparkles size={18} />}>
-            Launch Multi-Agent Pipeline
+            {autoDiscover && !niche.trim() ? 'Discover & Generate' : 'Launch Multi-Agent Pipeline'}
           </Button>
         </div>
       </form>

@@ -108,9 +108,15 @@ export const HITLReviewPage: React.FC = () => {
         setEditModalOpen(false);
         navigate(`/workflows/${currentWorkflow.id}`);
       } else if (action === 'REJECT') {
-        success('Workflow execution terminated.');
         setRejectDialogOpen(false);
-        navigate('/workflows');
+        if (updated.status === 'REJECTED') {
+          success('Maximum human rejections reached (3). Workflow execution terminated.');
+          navigate('/workflows');
+        } else {
+          success(
+            `Draft rejected (Rejection ${updated.human_rejection_count || 1}/${updated.max_human_rejections || 3}). Writer and Critic agents generated an improved variation!`
+          );
+        }
       }
     } catch (err: unknown) {
       const msg =
@@ -247,7 +253,7 @@ export const HITLReviewPage: React.FC = () => {
               <StatusBadge status={currentWorkflow.status} />
             </div>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              Platform: <strong style={{ textTransform: 'capitalize' }}>{currentWorkflow.target_platform}</strong> • Agent Revisions: <strong>{currentWorkflow.agent_revision_count}</strong> • Human Revisions: <strong>{currentWorkflow.human_revision_count}</strong>
+              Platform: <strong style={{ textTransform: 'capitalize' }}>{currentWorkflow.target_platform}</strong> • Agent Revisions: <strong>{currentWorkflow.agent_revision_count}</strong> • Human Revisions: <strong>{currentWorkflow.human_revision_count}</strong> • Human Rejections: <strong>{currentWorkflow.human_rejection_count || 0}/{currentWorkflow.max_human_rejections || 3}</strong>
             </p>
           </div>
         </div>
@@ -414,9 +420,13 @@ export const HITLReviewPage: React.FC = () => {
         isOpen={rejectDialogOpen}
         onClose={() => setRejectDialogOpen(false)}
         onConfirm={() => handleSubmitDecision('REJECT')}
-        title="Reject Content Workflow?"
-        message="Are you sure you want to reject this draft? This will terminate the workflow run and mark it as REJECTED."
-        confirmLabel="Reject Workflow"
+        title="Reject Content Draft?"
+        message={
+          (currentWorkflow.human_rejection_count || 0) < (currentWorkflow.max_human_rejections || 3)
+            ? `Rejecting this draft will increment the rejection counter (${(currentWorkflow.human_rejection_count || 0) + 1}/${currentWorkflow.max_human_rejections || 3}) and send it back to the Writer and Critic agents for an improved variation. After 3 rejections, the workflow will terminate.`
+            : `This is the 4th rejection. Submitting will terminate the workflow run and mark it as REJECTED.`
+        }
+        confirmLabel={(currentWorkflow.human_rejection_count || 0) < (currentWorkflow.max_human_rejections || 3) ? "Reject & Improve" : "Reject & Terminate"}
         variant="danger"
         isLoading={isSubmitting}
       />

@@ -64,10 +64,20 @@ class ResearchAgent:
 
     def _build_search_query(self, request: ResearchRequest) -> str:
         """Formulate an optimized search query from request parameters."""
-        query_parts = [request.niche]
-        if request.keywords:
-            query_parts.extend(request.keywords[:3])
-        query_parts.append("latest news trends developments")
+        if request.niche and request.niche.strip():
+            query_parts = [request.niche.strip()]
+            if request.keywords:
+                query_parts.extend(request.keywords[:3])
+            query_parts.append("latest news trends developments")
+        else:
+            # Auto-discovery query dynamically synthesized from target audience, platform, and keywords
+            base_topics = request.keywords[:3] if request.keywords else ["technology", "innovations", "trends"]
+            query_parts = [
+                "top trending topics news developments",
+                " ".join(base_topics),
+                f"for {request.audience}",
+                f"on {request.platform}",
+            ]
         return " ".join(query_parts).strip()
 
     def _format_search_context(self, results: list[SearchResult]) -> str:
@@ -88,10 +98,15 @@ class ResearchAgent:
         """Construct user prompt for structured trend extraction."""
         context_text = self._format_search_context(search_results)
         keywords_str = ", ".join(request.keywords) if request.keywords else "None specified"
+        target_niche_display = (
+            request.niche.strip()
+            if request.niche and request.niche.strip()
+            else f"Auto-Discovery (Trending topics for {request.audience} on {request.platform})"
+        )
 
         return (
             f"### RESEARCH PARAMETERS:\n"
-            f"- Target Niche: {request.niche}\n"
+            f"- Target Niche: {target_niche_display}\n"
             f"- Target Audience: {request.audience}\n"
             f"- Target Platform: {request.platform}\n"
             f"- Language: {request.language}\n"

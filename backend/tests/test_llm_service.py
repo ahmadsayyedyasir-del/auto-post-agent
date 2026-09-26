@@ -79,9 +79,11 @@ class MockLLMProvider(LLMProvider):
 # ------------------------------------------------------------------------------
 
 
-def test_settings_llm_defaults() -> None:
+def test_settings_llm_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify default LLM settings in Settings model."""
-    settings = Settings()
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    settings = Settings(_env_file=None)
     assert settings.llm_provider == "groq"
     assert settings.llm_model == "llama-3.3-70b-versatile"
     assert settings.llm_temperature == 0.2

@@ -38,4 +38,8 @@ export const workflowService = {
     const response = await apiClient.get<RevisionResponse[]>(`/workflows/${workflowId}/revisions`);
     return response.data;
   },
+
+  async deleteWorkflow(workflowId: string): Promise<void> {
+    await apiClient.delete(`/workflows/${workflowId}`);
+  },
 };

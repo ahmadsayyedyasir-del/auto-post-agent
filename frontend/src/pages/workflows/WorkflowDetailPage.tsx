@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { workflowService } from '../../services/workflows';
 import { publicationService } from '../../services/publications';
 import { scheduleService } from '../../services/schedules';
@@ -9,6 +9,7 @@ import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { StatusBadge } from '../../components/ui/StatusBadge';
 import { Stepper } from '../../components/ui/Stepper';
+import { ConfirmDialog } from '../../components/ui/Modal';
 import { PostPreview } from '../../components/workflow/PostPreview';
 import { CriticPanel } from '../../components/workflow/CriticPanel';
 import { RevisionDiff } from '../../components/workflow/RevisionDiff';
@@ -25,6 +26,7 @@ import {
   FileText,
   Compass,
   AlertTriangle,
+  Trash2,
 } from 'lucide-react';
 
 const TERMINAL_STATUSES: WorkflowStatus[] = [
@@ -39,6 +41,7 @@ const TERMINAL_STATUSES: WorkflowStatus[] = [
 
 export const WorkflowDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [workflow, setWorkflow] = useState<WorkflowDetailResponse | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +53,9 @@ export const WorkflowDetailPage: React.FC = () => {
   // Action Modals
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   const { success, error: toastError, warning } = useToast();
 
@@ -59,6 +64,21 @@ export const WorkflowDetailPage: React.FC = () => {
   const errorCountRef = useRef<number>(0);
   const lastStatusRef = useRef<string>('');
   const stageStartTimeRef = useRef<number>(Date.now());
+
+  const workflowRef = useRef<WorkflowDetailResponse | null>(null);
+  workflowRef.current = workflow;
+
+  // Store warning in a ref so fetchWorkflow doesn't need it as a dependency
+  const warningRef = useRef(warning);
+  warningRef.current = warning;
+
+  // Core fetch function stored in a ref to avoid recreating the polling effect.
+  // This fixes the stale closure problem: previously, fetchWorkflow was a useCallback
+  // with [id, warning] deps, and the polling effect depended on [fetchWorkflow, id].
+  // When ToastContext re-rendered (changing `warning`), fetchWorkflow was recreated,
+  // which restarted the polling effect — causing infinite effect recreation.
+  // By storing the fetch logic in a ref, the polling effect only depends on [id].
+  const fetchWorkflowRef = useRef<(isManualRefresh?: boolean) => Promise<void>>();
 
   const fetchWorkflow = useCallback(
     async (isManualRefresh = false) => {
@@ -89,20 +109,23 @@ export const WorkflowDetailPage: React.FC = () => {
         errorCountRef.current += 1;
         if (errorCountRef.current >= 3) {
           setIsPolling(false);
-          warning('Polling paused due to connection issues. Use Refresh button to retry.');
+          warningRef.current('Polling paused due to connection issues. Use Refresh button to retry.');
         }
         const msg =
           (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
           'Failed to load workflow execution details.';
-        if (!workflow) setError(msg);
+        if (!workflowRef.current) setError(msg);
       } finally {
         if (isManualRefresh) setIsLoading(false);
       }
     },
-    [id, workflow, warning]
+    [id]
   );
 
-  // Polling Engine
+  // Keep the ref in sync with the latest fetchWorkflow closure
+  fetchWorkflowRef.current = fetchWorkflow;
+
+  // Polling Engine — depends only on [id] to avoid effect recreation from callback changes
   useEffect(() => {
     let isMounted = true;
 
@@ -117,12 +140,14 @@ export const WorkflowDetailPage: React.FC = () => {
         return;
       }
 
-      await fetchWorkflow(false);
+      // Use the ref to always call the latest fetch logic without recreating the effect
+      await fetchWorkflowRef.current?.(false);
 
+      const current = workflowRef.current;
       if (
         isMounted &&
-        workflow &&
-        !TERMINAL_STATUSES.includes(workflow.status) &&
+        current &&
+        !TERMINAL_STATUSES.includes(current.status) &&
         errorCountRef.current < 3
       ) {
         const stageElapsed = Date.now() - stageStartTimeRef.current;
@@ -130,18 +155,22 @@ export const WorkflowDetailPage: React.FC = () => {
 
         setIsPolling(true);
         pollingTimerRef.current = setTimeout(runPollLoop, interval);
+      } else {
+        setIsPolling(false);
       }
     };
 
     // Initial load
     setIsLoading(true);
-    fetchWorkflow(true).then(() => {
+    pollingStartTimeRef.current = Date.now();
+    fetchWorkflowRef.current?.(true).then(() => {
+      const current = workflowRef.current;
       if (
-        workflow &&
-        !TERMINAL_STATUSES.includes(workflow.status) &&
-        !pollingTimerRef.current
+        isMounted &&
+        current &&
+        !TERMINAL_STATUSES.includes(current.status)
       ) {
-        pollingStartTimeRef.current = Date.now();
+        setIsPolling(true);
         pollingTimerRef.current = setTimeout(runPollLoop, 2000);
       }
     });
@@ -150,9 +179,10 @@ export const WorkflowDetailPage: React.FC = () => {
       isMounted = false;
       if (pollingTimerRef.current) {
         clearTimeout(pollingTimerRef.current);
+        pollingTimerRef.current = null;
       }
     };
-  }, [fetchWorkflow, workflow]);
+  }, [id]);
 
   const handlePublish = async (platformOverride?: string) => {
     if (!workflow) return;
@@ -214,6 +244,28 @@ export const WorkflowDetailPage: React.FC = () => {
   const isApproved = workflow.status === 'APPROVED' || workflow.status === 'PUBLISHED';
   const primaryPost = workflow.posts && workflow.posts.length > 0 ? workflow.posts[0] : null;
 
+  // Deletable when not actively executing
+  const ACTIVE_STATUSES: WorkflowStatus[] = ['STARTING', 'RESEARCHING', 'PLANNING', 'WRITING', 'CRITIQUING'];
+  const isDeletable = !ACTIVE_STATUSES.includes(workflow.status);
+
+  const handleDeleteWorkflow = async () => {
+    if (!workflow) return;
+    setDeleteLoading(true);
+    try {
+      await workflowService.deleteWorkflow(workflow.id);
+      success('Workflow deleted successfully.');
+      setDeleteDialogOpen(false);
+      navigate('/workflows');
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Failed to delete workflow.';
+      toastError(msg);
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
       {/* Header */}
@@ -235,6 +287,7 @@ export const WorkflowDetailPage: React.FC = () => {
             variant="secondary"
             size="sm"
             onClick={() => fetchWorkflow(true)}
+            aria-label="Refresh"
             leftIcon={<RefreshCw size={14} className={isPolling ? 'animate-spin' : ''} />}
           >
             {isPolling ? 'Polling Progress...' : 'Refresh'}
@@ -268,6 +321,17 @@ export const WorkflowDetailPage: React.FC = () => {
               </Button>
             </>
           )}
+
+          {isDeletable && (
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => setDeleteDialogOpen(true)}
+              leftIcon={<Trash2 size={14} />}
+            >
+              Delete Workflow
+            </Button>
+          )}
         </div>
       </div>
 
@@ -298,8 +362,67 @@ export const WorkflowDetailPage: React.FC = () => {
 
       {/* Stepper Progress */}
       <Card>
-        <Stepper currentStatus={workflow.status} />
+        <Stepper
+          currentStatus={workflow.status}
+          currentStage={workflow.current_stage}
+          errorMessage={workflow.error_message}
+          revisionCount={workflow.revision_count}
+        />
       </Card>
+
+      {/* Live Execution Metadata */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 'var(--space-4)' }}>
+        {[
+          { label: 'Current Stage', value: workflow.current_stage || workflow.status },
+          { label: 'Total Revisions', value: workflow.revision_count },
+          { label: 'Agent Revisions', value: workflow.agent_revision_count },
+          { label: 'Human Revisions', value: workflow.human_revision_count },
+          { label: 'Rejections', value: `${workflow.human_rejection_count} / ${workflow.max_human_rejections}` },
+          { label: 'Max Revisions', value: workflow.max_revisions },
+        ].map((item) => (
+          <div
+            key={item.label}
+            style={{
+              background: 'var(--bg-secondary)',
+              borderRadius: 'var(--radius-md)',
+              padding: 'var(--space-3) var(--space-4)',
+              textAlign: 'center',
+            }}
+          >
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 'var(--space-1)' }}>
+              {item.label}
+            </div>
+            <div style={{ fontSize: '1.1rem', fontWeight: 700, textTransform: 'uppercase' }}>
+              {item.value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Failure Callout Box if workflow failed */}
+      {workflow.status === 'FAILED' && (
+        <div
+          style={{
+            background: 'rgba(239, 68, 68, 0.08)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            borderRadius: 'var(--radius-lg)',
+            padding: 'var(--space-5) var(--space-6)',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 'var(--space-3)',
+          }}
+        >
+          <AlertTriangle size={24} color="var(--error)" style={{ marginTop: '2px', flexShrink: 0 }} />
+          <div>
+            <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--error)' }}>
+              Execution Failed during stage: {workflow.current_stage || 'UNKNOWN'}
+            </h3>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginTop: 'var(--space-1)' }}>
+              {workflow.error_message || 'An unexpected error occurred during workflow execution.'}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Review Callout Box if paused */}
       {isReviewRequired && (
@@ -446,6 +569,18 @@ export const WorkflowDetailPage: React.FC = () => {
         onSchedule={handleSchedule}
         defaultPlatform={workflow.target_platform}
         isLoading={actionLoading}
+      />
+
+      <ConfirmDialog
+        isOpen={deleteDialogOpen}
+        onClose={() => setDeleteDialogOpen(false)}
+        onConfirm={handleDeleteWorkflow}
+        title="Delete Workflow"
+        message="This action will permanently delete this workflow and all associated posts, revisions, feedback, publications, and schedules. This cannot be undone."
+        confirmLabel="Delete Permanently"
+        cancelLabel="Keep Workflow"
+        variant="danger"
+        isLoading={deleteLoading}
       />
     </div>
   );

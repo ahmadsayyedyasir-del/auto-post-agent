@@ -1,7 +1,7 @@
 """Research domain schemas for the AI Social Media Automation Platform."""
 
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ResearchRequest(BaseModel):
@@ -9,7 +9,14 @@ class ResearchRequest(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    niche: str = Field(..., min_length=2, description="Target domain or subject area (e.g., 'Artificial Intelligence')")
+    niche: str | None = Field(
+        default=None,
+        description="Target domain or subject area (e.g., 'Artificial Intelligence'). Optional if auto_discover is True.",
+    )
+    auto_discover: bool = Field(
+        default=False,
+        description="Whether to automatically discover trending topics from current web news when niche is not specified",
+    )
     audience: str = Field(default="AI practitioners, students, and enthusiasts", description="Target reader demographic")
     platform: str = Field(default="linkedin", description="Target social platform (e.g., 'linkedin', 'twitter')")
     language: str = Field(default="English", description="Content language")
@@ -18,6 +25,15 @@ class ResearchRequest(BaseModel):
     time_range: Literal["day", "week", "month", "year"] = Field(
         default="week", description="Time window for search freshness"
     )
+
+    @model_validator(mode="after")
+    def validate_niche_or_auto_discover(self) -> "ResearchRequest":
+        niche_provided = bool(self.niche and self.niche.strip())
+        if not niche_provided and not self.auto_discover:
+            raise ValueError("Either 'niche' must be provided or 'auto_discover' must be set to True.")
+        if niche_provided and len(self.niche.strip()) < 2:
+            raise ValueError("Provided 'niche' must be at least 2 characters.")
+        return self
 
 
 class SearchResult(BaseModel):

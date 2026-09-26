@@ -47,11 +47,15 @@ class SocialWorkflowState(TypedDict, total=False):
     revision_count: int
     agent_revision_count: int
     human_revision_count: int
+    human_rejection_count: int
+    max_human_rejections: int
     revision_source: str  # "AGENT" | "HUMAN"
     max_revisions: int
     status: str
+    current_stage: str  # Tracks the specific node/stage actively executing or where failure occurred
     human_review_required: bool
     human_decision: str | None
     human_feedback: list[str] | None
     edited_content: str | None
     error: str | None
+

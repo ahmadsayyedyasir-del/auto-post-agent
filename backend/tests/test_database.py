@@ -320,3 +320,61 @@ async def test_transaction_rollback_on_error(db_session: AsyncSession) -> None:
 
     fetched = await repo.get_by_id(workflow.id)
     assert fetched is None
+
+
+# ------------------------------------------------------------------------------
+# 7. Human Rejection & Safe Defaults Tests
+# ------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_rejection_defaults(db_session: AsyncSession) -> None:
+    """Verify that new and existing workflows default to 0 human rejections and max 3."""
+    repo = WorkflowRepository(db_session)
+
+    workflow = WorkflowRun(
+        niche="Machine Learning",
+        target_platform="twitter",
+    )
+    created = await repo.create(workflow)
+    await db_session.commit()
+
+    fetched = await repo.get_by_id(created.id)
+    assert fetched is not None
+    assert fetched.human_rejection_count == 0
+    assert fetched.max_human_rejections == 3
+
+
+def test_alembic_migration_0006_upgrade_downgrade() -> None:
+    """Verify that Alembic migration 0006 executes upgrade and downgrade cleanly."""
+    from alembic.config import Config
+    from alembic import command
+    from pathlib import Path
+    import tempfile
+
+    backend_dir = Path(__file__).resolve().parent.parent
+    ini_path = backend_dir / "alembic.ini"
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp_db:
+        db_path = Path(tmp_db.name)
+
+    try:
+        cfg = Config(str(ini_path))
+        cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+        cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+
+        # Upgrade to head (including 0006)
+        command.upgrade(cfg, "head")
+
+        # Downgrade 1 revision (reverts 0006)
+        command.downgrade(cfg, "-1")
+
+        # Upgrade back to head
+        command.upgrade(cfg, "head")
+    finally:
+        if db_path.exists():
+            try:
+                db_path.unlink()
+            except Exception:
+                pass
+

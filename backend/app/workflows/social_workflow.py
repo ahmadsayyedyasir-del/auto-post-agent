@@ -1,7 +1,7 @@
 """LangGraph state machine orchestration for Research -> Planning -> Writer -> Critic -> Human Review workflow."""
 
 import logging
-from typing import Any
+from typing import Any, Callable, Awaitable
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -21,6 +21,11 @@ from backend.app.workflows.state import HumanReviewAction, SocialWorkflowState, 
 logger = logging.getLogger(__name__)
 
 
+# Type alias for the optional stage persistence callback.
+# Signature: async (stage: str, status: str) -> None
+StageCallback = Callable[[str, str], Awaitable[None]]
+
+
 def create_social_workflow(
     research_agent: ResearchAgent | None = None,
     planning_agent: PlanningAgent | None = None,
@@ -28,6 +33,7 @@ def create_social_workflow(
     critic_agent: CriticAgent | None = None,
     llm_service: Any | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    stage_callback: StageCallback | None = None,
 ) -> CompiledStateGraph:
     """Construct and compile the multi-agent social media content workflow using LangGraph."""
     # Lazy/injected agent resolution
@@ -62,7 +68,11 @@ def create_social_workflow(
     async def research_node(state: SocialWorkflowState) -> dict[str, Any]:
         """Execute ResearchAgent to discover trends and source evidence."""
         if state.get("error"):
-            return {"status": WorkflowStatus.FAILED.value}
+            return {}
+
+        # Persist RESEARCHING stage to DB for frontend polling visibility
+        if stage_callback:
+            await stage_callback(WorkflowStatus.RESEARCHING.value, WorkflowStatus.RESEARCHING.value)
 
         request = state.get("request")
         if not request:
@@ -70,6 +80,7 @@ def create_social_workflow(
             return {
                 "error": "ResearchRequest is missing from workflow state.",
                 "status": WorkflowStatus.FAILED.value,
+                "current_stage": WorkflowStatus.RESEARCHING.value,
             }
 
         logger.info("Executing research_node for niche: '%s'", request.niche)
@@ -79,6 +90,7 @@ def create_social_workflow(
             return {
                 "research": research_response,
                 "status": WorkflowStatus.PLANNING.value,
+                "current_stage": WorkflowStatus.PLANNING.value,
                 "error": None,
             }
         except Exception as err:
@@ -86,12 +98,17 @@ def create_social_workflow(
             return {
                 "error": f"ResearchAgent error: {err}",
                 "status": WorkflowStatus.FAILED.value,
+                "current_stage": WorkflowStatus.RESEARCHING.value,
             }
 
     async def planning_node(state: SocialWorkflowState) -> dict[str, Any]:
         """Execute PlanningAgent to formulate structured content strategy."""
         if state.get("error"):
-            return {"status": WorkflowStatus.FAILED.value}
+            return {}
+
+        # Persist PLANNING stage to DB for frontend polling visibility
+        if stage_callback:
+            await stage_callback(WorkflowStatus.PLANNING.value, WorkflowStatus.PLANNING.value)
 
         research = state.get("research")
         request = state.get("request")
@@ -100,13 +117,19 @@ def create_social_workflow(
             return {
                 "error": "ResearchResponse or ResearchRequest missing from workflow state.",
                 "status": WorkflowStatus.FAILED.value,
+                "current_stage": WorkflowStatus.PLANNING.value,
             }
 
-        logger.info("Executing planning_node for niche: '%s'", request.niche)
+        effective_niche = (
+            request.niche.strip()
+            if request.niche and request.niche.strip()
+            else (research.trends[0].topic if research and research.trends else "Auto-Discovered Trend")
+        )
+        logger.info("Executing planning_node for niche: '%s'", effective_niche)
         try:
             planning_req = PlanningRequest(
                 research=research,
-                niche=request.niche,
+                niche=effective_niche,
                 audience=request.audience,
                 platform=request.platform,
                 language=request.language,
@@ -117,6 +140,7 @@ def create_social_workflow(
             return {
                 "content_plan": content_plan,
                 "status": WorkflowStatus.WRITING.value,
+                "current_stage": WorkflowStatus.WRITING.value,
                 "error": None,
             }
         except Exception as err:
@@ -124,12 +148,17 @@ def create_social_workflow(
             return {
                 "error": f"PlanningAgent error: {err}",
                 "status": WorkflowStatus.FAILED.value,
+                "current_stage": WorkflowStatus.PLANNING.value,
             }
 
     async def writer_node(state: SocialWorkflowState) -> dict[str, Any]:
         """Execute WriterAgent to generate or revise platform-tailored social copy."""
         if state.get("error"):
-            return {"status": WorkflowStatus.FAILED.value}
+            return {}
+
+        # Persist WRITING stage to DB for frontend polling visibility
+        if stage_callback:
+            await stage_callback(WorkflowStatus.WRITING.value, WorkflowStatus.WRITING.value)
 
         plan = state.get("content_plan")
         if not plan:
@@ -137,6 +166,7 @@ def create_social_workflow(
             return {
                 "error": "ContentPlan missing from workflow state.",
                 "status": WorkflowStatus.FAILED.value,
+                "current_stage": WorkflowStatus.WRITING.value,
             }
 
         request = state.get("request")
@@ -147,6 +177,7 @@ def create_social_workflow(
         current_revisions = state.get("revision_count", 0)
         current_agent_revisions = state.get("agent_revision_count", 0)
         current_human_revisions = state.get("human_revision_count", 0)
+        current_human_rejections = state.get("human_rejection_count", 0)
         revision_source = state.get("revision_source", "AGENT")
 
         is_revision = bool(
@@ -192,7 +223,9 @@ def create_social_workflow(
                 "revision_count": new_revision_count,
                 "agent_revision_count": new_agent_revisions,
                 "human_revision_count": new_human_revisions,
+                "human_rejection_count": current_human_rejections,
                 "status": WorkflowStatus.CRITIQUING.value,
+                "current_stage": WorkflowStatus.CRITIQUING.value,
                 "error": None,
             }
         except Exception as err:
@@ -200,12 +233,17 @@ def create_social_workflow(
             return {
                 "error": f"WriterAgent error: {err}",
                 "status": WorkflowStatus.FAILED.value,
+                "current_stage": WorkflowStatus.WRITING.value,
             }
 
     async def critic_node(state: SocialWorkflowState) -> dict[str, Any]:
         """Execute CriticAgent to evaluate post quality, compliance, and grounding."""
         if state.get("error"):
-            return {"status": WorkflowStatus.FAILED.value}
+            return {}
+
+        # Persist CRITIQUING stage to DB for frontend polling visibility
+        if stage_callback:
+            await stage_callback(WorkflowStatus.CRITIQUING.value, WorkflowStatus.CRITIQUING.value)
 
         post = state.get("social_post")
         plan = state.get("content_plan")
@@ -214,6 +252,7 @@ def create_social_workflow(
             return {
                 "error": "SocialPost or ContentPlan missing from workflow state.",
                 "status": WorkflowStatus.FAILED.value,
+                "current_stage": WorkflowStatus.CRITIQUING.value,
             }
 
         research = state.get("research")
@@ -248,10 +287,17 @@ def create_social_workflow(
                 else WorkflowStatus.WRITING.value
             )
 
+            # Determine the next current_stage based on routing
+            if is_approved or is_max_reached:
+                next_stage = WorkflowStatus.WAITING_FOR_HUMAN_REVIEW.value
+            else:
+                next_stage = WorkflowStatus.WRITING.value
+
             return {
                 "critic_result": critic_result,
                 "revision_feedback": combined_feedback,
                 "status": next_status,
+                "current_stage": next_stage,
                 "human_review_required": bool(is_approved or is_max_reached),
                 "error": None,
             }
@@ -260,16 +306,25 @@ def create_social_workflow(
             return {
                 "error": f"CriticAgent error: {err}",
                 "status": WorkflowStatus.FAILED.value,
+                "current_stage": WorkflowStatus.CRITIQUING.value,
             }
 
     async def human_review_node(state: SocialWorkflowState) -> dict[str, Any]:
         """HITL interruption node pausing execution until human review decision is submitted."""
         if state.get("error"):
-            return {"status": WorkflowStatus.FAILED.value}
+            return {}
+
+        # Persist WAITING_FOR_HUMAN_REVIEW stage to DB for frontend polling visibility
+        if stage_callback:
+            await stage_callback(
+                WorkflowStatus.WAITING_FOR_HUMAN_REVIEW.value,
+                WorkflowStatus.WAITING_FOR_HUMAN_REVIEW.value,
+            )
 
         logger.info(
-            "Executing human_review_node (suspending for human review, total revisions: %d)",
+            "Executing human_review_node (suspending for human review, total revisions: %d, rejections: %d)",
             state.get("revision_count", 0),
+            state.get("human_rejection_count", 0),
         )
 
         review_prompt_data = {
@@ -281,6 +336,8 @@ def create_social_workflow(
             "revision_count": state.get("revision_count", 0),
             "agent_revision_count": state.get("agent_revision_count", 0),
             "human_revision_count": state.get("human_revision_count", 0),
+            "human_rejection_count": state.get("human_rejection_count", 0),
+            "max_human_rejections": state.get("max_human_rejections", 3),
         }
 
         # LangGraph native interrupt suspending execution until Command(resume=...)
@@ -299,6 +356,8 @@ def create_social_workflow(
 
         current_tot = state.get("revision_count", 0)
         current_human = state.get("human_revision_count", 0)
+        current_rejections = state.get("human_rejection_count", 0)
+        max_human_rejections = state.get("max_human_rejections", 3)
 
         if action == HumanReviewAction.EDIT.value:
             updated_post = state.get("social_post")
@@ -326,11 +385,38 @@ def create_social_workflow(
                 "human_review_required": False,
             }
         elif action == HumanReviewAction.REJECT.value:
-            return {
-                "human_decision": HumanReviewAction.REJECT.value,
-                "status": WorkflowStatus.REJECTED.value,
-                "human_review_required": False,
-            }
+            if current_rejections < max_human_rejections:
+                new_rejections = current_rejections + 1
+                rejection_feedback = feedback_list or [
+                    "Draft was rejected by human reviewer. Please generate a fresh, improved variation with an engaging angle."
+                ]
+                logger.info(
+                    "Human rejected draft (attempt %d of %d). Routing back to writer for improvement.",
+                    new_rejections,
+                    max_human_rejections,
+                )
+                return {
+                    "human_decision": HumanReviewAction.REJECT.value,
+                    "human_rejection_count": new_rejections,
+                    "human_feedback": feedback_list,
+                    "revision_feedback": rejection_feedback,
+                    "revision_source": "HUMAN",
+                    "status": WorkflowStatus.WRITING.value,
+                    "human_review_required": False,
+                }
+            else:
+                logger.info(
+                    "Human rejected draft and max rejections reached (%d/%d). Terminating workflow.",
+                    current_rejections + 1,
+                    max_human_rejections,
+                )
+                return {
+                    "human_decision": HumanReviewAction.REJECT.value,
+                    "human_rejection_count": current_rejections + 1,
+                    "human_feedback": feedback_list,
+                    "status": WorkflowStatus.REJECTED.value,
+                    "human_review_required": False,
+                }
         else:
             # Default APPROVE
             return {
@@ -342,10 +428,13 @@ def create_social_workflow(
     async def finalize_node(state: SocialWorkflowState) -> dict[str, Any]:
         """Finalize workflow and ensure terminal status."""
         if state.get("error"):
-            return {"status": WorkflowStatus.FAILED.value}
+            return {
+                "status": WorkflowStatus.FAILED.value,
+                "current_stage": state.get("current_stage", WorkflowStatus.FAILED.value),
+            }
 
         decision = state.get("human_decision")
-        if decision == HumanReviewAction.REJECT.value:
+        if decision == HumanReviewAction.REJECT.value and state.get("status") == WorkflowStatus.REJECTED.value:
             final_status = WorkflowStatus.REJECTED.value
         elif decision == HumanReviewAction.APPROVE.value:
             final_status = WorkflowStatus.APPROVED.value
@@ -355,6 +444,7 @@ def create_social_workflow(
         logger.info("Workflow completed with final status: %s", final_status)
         return {
             "status": final_status,
+            "current_stage": final_status,
             "human_review_required": False,
         }
 
@@ -409,7 +499,14 @@ def create_social_workflow(
             logger.info("Human submitted EDIT; routing to critic_node for validation.")
             return "critic"
         elif decision == HumanReviewAction.REJECT.value:
-            logger.info("Human submitted REJECT; routing to finalize.")
+            if state.get("status") == WorkflowStatus.WRITING.value:
+                logger.info(
+                    "Human submitted REJECT (rejection %d/%d); routing back to writer_node for improvement.",
+                    state.get("human_rejection_count", 0),
+                    state.get("max_human_rejections", 3),
+                )
+                return "writer"
+            logger.info("Human submitted terminal REJECT; routing to finalize.")
             return "finalize"
         else:
             logger.info("Human submitted APPROVE; routing to finalize.")

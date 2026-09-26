@@ -43,6 +43,8 @@ const mockWorkflowData: WorkflowDetailResponse = {
   revision_count: 1,
   agent_revision_count: 1,
   human_revision_count: 0,
+  human_rejection_count: 0,
+  max_human_rejections: 3,
   max_revisions: 2,
   research_data: { trends: [{ topic: 'LangGraph', summary: 'State machines for agents' }] },
   content_plan: { topic: 'LangGraph Agents', hook: 'Are your agents reliable?', key_points: ['Determinism', 'Checkpoints'] },
@@ -101,6 +103,37 @@ describe('Workflow Studio & Detail Views', () => {
     await waitFor(() => {
       expect(workflowService.startWorkflow).toHaveBeenCalledWith({
         niche: 'Autonomous AI in DevOps',
+        auto_discover: false,
+        platform: 'linkedin',
+        audience: 'Tech Founders & Engineers',
+        language: 'English',
+        max_trends: 3,
+        days_back: 7,
+      });
+    });
+  });
+
+  it('submits workflow with auto-discovery enabled and empty niche', async () => {
+    vi.mocked(workflowService.startWorkflow).mockResolvedValue(mockWorkflowData);
+
+    render(
+      <MemoryRouter initialEntries={['/workflows/new']}>
+        <ToastProvider>
+          <WorkflowCreatePage />
+        </ToastProvider>
+      </MemoryRouter>
+    );
+
+    const toggle = screen.getByLabelText(/let ai discover a trending topic automatically/i);
+    fireEvent.click(toggle);
+
+    const submitBtn = screen.getByRole('button', { name: /discover & generate/i });
+    fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(workflowService.startWorkflow).toHaveBeenCalledWith({
+        niche: undefined,
+        auto_discover: true,
         platform: 'linkedin',
         audience: 'Tech Founders & Engineers',
         language: 'English',

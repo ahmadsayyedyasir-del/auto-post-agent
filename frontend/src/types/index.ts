@@ -161,6 +161,8 @@ export interface WorkflowDetailResponse {
   revision_count: number;
   agent_revision_count: number;
   human_revision_count: number;
+  human_rejection_count: number;
+  max_human_rejections: number;
   max_revisions: number;
   research_data: Record<string, unknown> | null;
   content_plan: Record<string, unknown> | null;
@@ -172,7 +174,8 @@ export interface WorkflowDetailResponse {
 }
 
 export interface ResearchRequest {
-  niche: string;
+  niche?: string | null;
+  auto_discover?: boolean;
   platform?: string;
   audience?: string;
   language?: string;

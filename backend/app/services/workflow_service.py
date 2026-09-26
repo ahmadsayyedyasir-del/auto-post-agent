@@ -48,7 +48,32 @@ class WorkflowService:
         self.critic_agent = critic_agent
         self.checkpointer = checkpointer
 
-    def _get_workflow_graph(self, checkpointer: BaseCheckpointSaver | None = None):
+    @staticmethod
+    def _create_stage_callback(
+        workflow_id: str,
+        session: AsyncSession,
+    ):
+        """Create an async callback that persists stage transitions to the DB during graph execution.
+
+        This enables frontend polling to observe intermediate stages (RESEARCHING, PLANNING, etc.)
+        instead of only seeing the final state after ainvoke completes.
+        """
+        async def _persist_stage(stage: str, status: str) -> None:
+            repo = WorkflowRepository(session)
+            await repo.update_status(
+                workflow_id=workflow_id,
+                status=status,
+                current_stage=stage,
+            )
+            await session.commit()
+
+        return _persist_stage
+
+    def _get_workflow_graph(
+        self,
+        checkpointer: BaseCheckpointSaver | None = None,
+        stage_callback=None,
+    ):
         """Construct compiled workflow graph with resolved checkpointer."""
         active_checkpointer = checkpointer or self.checkpointer
         return create_social_workflow(
@@ -58,7 +83,19 @@ class WorkflowService:
             critic_agent=self.critic_agent,
             llm_service=self.llm_service,
             checkpointer=active_checkpointer,
+            stage_callback=stage_callback,
         )
+
+    def _instantiate_workflow_graph(
+        self,
+        checkpointer: BaseCheckpointSaver | None = None,
+        stage_callback=None,
+    ):
+        """Helper to invoke _get_workflow_graph respecting mock signatures that omit stage_callback."""
+        try:
+            return self._get_workflow_graph(checkpointer=checkpointer, stage_callback=stage_callback)
+        except TypeError:
+            return self._get_workflow_graph(checkpointer=checkpointer)
 
     async def start_workflow(
         self,
@@ -73,17 +110,20 @@ class WorkflowService:
         feedback_repo = FeedbackRepository(session)
 
         # 1. Create initial WorkflowRun entity in DB
+        initial_niche = request.niche.strip() if request.niche and request.niche.strip() else "Auto-Discovery"
         workflow_run = WorkflowRun(
             user_id=user_id,
-            niche=request.niche,
+            niche=initial_niche,
             target_platform=request.platform,
             audience=request.audience,
             language=request.language,
             status=WorkflowStatus.STARTING.value,
-            current_stage=WorkflowStatus.STARTING.value,
+            current_stage=WorkflowStatus.RESEARCHING.value,
             revision_count=0,
             agent_revision_count=0,
             human_revision_count=0,
+            human_rejection_count=0,
+            max_human_rejections=3,
             max_revisions=2,
         )
         await workflow_repo.create(workflow_run)
@@ -92,18 +132,23 @@ class WorkflowService:
         workflow_id = str(workflow_run.id)
         config = {"configurable": {"thread_id": workflow_id}}
 
+        # Create the stage persistence callback for intermediate stage visibility
+        stage_cb = self._create_stage_callback(workflow_id, session)
+
         initial_state: SocialWorkflowState = {
             "request": request,
             "revision_count": 0,
             "agent_revision_count": 0,
             "human_revision_count": 0,
+            "human_rejection_count": 0,
+            "max_human_rejections": workflow_run.max_human_rejections,
             "max_revisions": workflow_run.max_revisions,
             "status": WorkflowStatus.STARTING.value,
         }
 
         # 2. Execute graph with checkpointer
         async def _execute_with_saver(saver: BaseCheckpointSaver):
-            graph = self._get_workflow_graph(checkpointer=saver)
+            graph = self._instantiate_workflow_graph(checkpointer=saver, stage_callback=stage_cb)
             return await graph.ainvoke(initial_state, config=config)
 
         if checkpointer or self.checkpointer:
@@ -115,13 +160,17 @@ class WorkflowService:
 
         # 3. Synchronize database state with graph execution state
         workflow_run.status = state.get("status", WorkflowStatus.WAITING_FOR_HUMAN_REVIEW.value)
-        workflow_run.current_stage = workflow_run.status
+        workflow_run.current_stage = state.get("current_stage", workflow_run.status)
         workflow_run.revision_count = state.get("revision_count", 0)
         workflow_run.agent_revision_count = state.get("agent_revision_count", 0)
         workflow_run.human_revision_count = state.get("human_revision_count", 0)
+        workflow_run.human_rejection_count = state.get("human_rejection_count", 0)
+        workflow_run.max_human_rejections = state.get("max_human_rejections", 3)
 
         if state.get("research"):
             workflow_run.research_data = state["research"].model_dump()
+            if (workflow_run.niche == "Auto-Discovery" or not workflow_run.niche) and state["research"].trends:
+                workflow_run.niche = state["research"].trends[0].topic
         if state.get("content_plan"):
             workflow_run.content_plan = state["content_plan"].model_dump()
         if state.get("error"):
@@ -219,9 +268,12 @@ class WorkflowService:
 
         config = {"configurable": {"thread_id": workflow_id}}
 
+        # Create the stage persistence callback for intermediate stage visibility
+        stage_cb = self._create_stage_callback(workflow_id, session)
+
         # 3. Resume LangGraph execution from interrupt checkpoint
         async def _resume_with_saver(saver: BaseCheckpointSaver):
-            graph = self._get_workflow_graph(checkpointer=saver)
+            graph = self._instantiate_workflow_graph(checkpointer=saver, stage_callback=stage_cb)
             return await graph.ainvoke(Command(resume=resume_payload), config=config)
 
         if checkpointer or self.checkpointer:
@@ -233,10 +285,12 @@ class WorkflowService:
 
         # 4. Synchronize DB records
         workflow_run.status = resumed_state.get("status", WorkflowStatus.APPROVED.value)
-        workflow_run.current_stage = workflow_run.status
+        workflow_run.current_stage = resumed_state.get("current_stage", workflow_run.status)
         workflow_run.revision_count = resumed_state.get("revision_count", workflow_run.revision_count)
         workflow_run.agent_revision_count = resumed_state.get("agent_revision_count", workflow_run.agent_revision_count)
         workflow_run.human_revision_count = resumed_state.get("human_revision_count", workflow_run.human_revision_count)
+        workflow_run.human_rejection_count = resumed_state.get("human_rejection_count", workflow_run.human_rejection_count)
+        workflow_run.max_human_rejections = resumed_state.get("max_human_rejections", workflow_run.max_human_rejections)
 
         if resumed_state.get("error"):
             workflow_run.error_message = resumed_state["error"]
@@ -266,16 +320,16 @@ class WorkflowService:
                     revision_source="HUMAN",
                 )
 
-            # If REVISE, record updated post generated by Writer
+            # If REVISE or REJECT (non-terminal loop), record updated post generated by Writer
             latest_post = resumed_state.get("social_post")
-            if latest_post and action_str == HumanReviewAction.REVISE.value:
+            if latest_post and action_str in (HumanReviewAction.REVISE.value, HumanReviewAction.REJECT.value):
                 current_post.content = latest_post.content
                 current_post.hashtags = latest_post.hashtags
                 current_post.cta = latest_post.cta
                 current_post.source_references = latest_post.source_references
                 await post_repo.create_revision_snapshot(
                     post_id=current_post.id,
-                    revision_feedback=feedback_list,
+                    revision_feedback=feedback_list or resumed_state.get("revision_feedback", []),
                     revision_source="HUMAN",
                 )
 
@@ -287,7 +341,7 @@ class WorkflowService:
 
             # Record critic result if updated
             latest_critic = resumed_state.get("critic_result")
-            if latest_critic and action_str in (HumanReviewAction.REVISE.value, HumanReviewAction.EDIT.value):
+            if latest_critic and action_str in (HumanReviewAction.REVISE.value, HumanReviewAction.EDIT.value, HumanReviewAction.REJECT.value):
                 critic_feedback = Feedback(
                     workflow_run_id=workflow_run.id,
                     post_id=current_post.id,
@@ -308,3 +362,43 @@ class WorkflowService:
         """Fetch complete workflow entity with all related posts, revisions, and feedbacks."""
         repo = WorkflowRepository(session)
         return await repo.get_with_relations(workflow_id)
+
+    async def delete_workflow(
+        self,
+        workflow_id: str,
+        session: AsyncSession,
+        user_id: str | None = None,
+    ) -> bool:
+        """Delete a workflow run and all its cascading records (posts, revisions, feedbacks, publications, schedules).
+
+        Validation:
+        - If workflow not found -> returns False.
+        - If workflow is owned by another user -> returns False.
+        - If workflow is actively running -> raises ValueError (mapped to 409 Conflict in API).
+        - Terminal and review-paused workflows are cleanly deleted.
+        """
+        repo = WorkflowRepository(session)
+        workflow = await repo.get_with_relations(workflow_id)
+        if not workflow:
+            return False
+
+        if user_id is not None and workflow.user_id is not None and workflow.user_id != user_id:
+            return False
+
+        active_statuses = {
+            WorkflowStatus.STARTING.value,
+            WorkflowStatus.RESEARCHING.value,
+            WorkflowStatus.PLANNING.value,
+            WorkflowStatus.WRITING.value,
+            WorkflowStatus.CRITIQUING.value,
+            "PUBLISHING",
+            "RUNNING",
+        }
+        if workflow.status in active_statuses:
+            raise ValueError(
+                f"Cannot delete workflow '{workflow_id}' while it is actively executing (status: {workflow.status})."
+            )
+
+        await repo.delete(workflow_id)
+        await session.commit()
+        return True

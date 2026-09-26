@@ -38,6 +38,8 @@ const mockReviewWorkflow: WorkflowDetailResponse = {
   revision_count: 1,
   agent_revision_count: 1,
   human_revision_count: 0,
+  human_rejection_count: 0,
+  max_human_rejections: 3,
   max_revisions: 2,
   research_data: null,
   content_plan: null,
@@ -217,4 +219,89 @@ describe('Human-in-the-Loop (HITL) Review Station', () => {
       });
     });
   });
+
+  it('handles non-terminal REJECT action (attempt 1/3) updating state without navigating away', async () => {
+    vi.mocked(workflowService.getWorkflow).mockResolvedValue(mockReviewWorkflow);
+    vi.mocked(workflowService.submitReview).mockResolvedValue({
+      ...mockReviewWorkflow,
+      status: 'WAITING_FOR_HUMAN_REVIEW',
+      human_rejection_count: 1,
+      max_human_rejections: 3,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/review/wf-review-1']}>
+        <ToastProvider>
+          <Routes>
+            <Route path="/review/:id" element={<HITLReviewPage />} />
+          </Routes>
+        </ToastProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /reject/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /reject/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Reject Content Draft\?/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /reject & improve/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /reject & improve/i }));
+
+    await waitFor(() => {
+      expect(workflowService.submitReview).toHaveBeenCalledWith('wf-review-1', {
+        action: 'REJECT',
+        feedback: undefined,
+        content: undefined,
+      });
+    });
+  });
+
+  it('handles terminal REJECT action (attempt 4/3) terminating workflow and navigating', async () => {
+    const fourthRejectWorkflow: WorkflowDetailResponse = {
+      ...mockReviewWorkflow,
+      human_rejection_count: 3,
+    };
+    vi.mocked(workflowService.getWorkflow).mockResolvedValue(fourthRejectWorkflow);
+    vi.mocked(workflowService.submitReview).mockResolvedValue({
+      ...fourthRejectWorkflow,
+      status: 'REJECTED',
+      human_rejection_count: 4,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/review/wf-review-1']}>
+        <ToastProvider>
+          <Routes>
+            <Route path="/review/:id" element={<HITLReviewPage />} />
+          </Routes>
+        </ToastProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /reject/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /reject/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /reject & terminate/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /reject & terminate/i }));
+
+    await waitFor(() => {
+      expect(workflowService.submitReview).toHaveBeenCalledWith('wf-review-1', {
+        action: 'REJECT',
+        feedback: undefined,
+        content: undefined,
+      });
+    });
+  });
 });
+

@@ -325,15 +325,20 @@ async def test_api_submit_review_revise_and_timeline(api_client) -> None:
 
 @pytest.mark.asyncio
 async def test_api_submit_review_edit_and_reject(api_client) -> None:
-    """Test human EDIT and REJECT actions."""
+    """Test human EDIT and bounded 3-cycle REJECT actions via API."""
     mock_research = AsyncMock(spec=ResearchAgent)
     mock_research.research.return_value = create_sample_research_response()
 
     mock_planning = AsyncMock(spec=PlanningAgent)
     mock_planning.plan.return_value = create_sample_content_plan()
 
+    post1 = create_sample_social_post("Draft 1 (Initial).")
+    post2 = create_sample_social_post("Draft 2 (After Rejection 1).")
+    post3 = create_sample_social_post("Draft 3 (After Rejection 2).")
+    post4 = create_sample_social_post("Draft 4 (After Rejection 3).")
+
     mock_writer = AsyncMock(spec=WriterAgent)
-    mock_writer.write.return_value = create_sample_social_post("Draft 1.")
+    mock_writer.write.side_effect = [post1, post2, post3, post4]
 
     mock_critic = AsyncMock(spec=CriticAgent)
     mock_critic.review.return_value = CriticResult(
@@ -372,11 +377,35 @@ async def test_api_submit_review_edit_and_reject(api_client) -> None:
         assert edit_data["human_revision_count"] == 1
         assert edit_data["posts"][0]["content"] == "Updated manually by human reviewer."
 
-        # 3. Reject
+        # 3. Reject #1 -> loops back to WAITING_FOR_HUMAN_REVIEW with rejection_count = 1
         reject_payload = {"action": "REJECT"}
-        reject_res = await api_client.post(f"/api/v1/workflows/{workflow_id}/review", json=reject_payload)
-        assert reject_res.status_code == 200
-        assert reject_res.json()["status"] == "REJECTED"
+        rej1_res = await api_client.post(f"/api/v1/workflows/{workflow_id}/review", json=reject_payload)
+        assert rej1_res.status_code == 200
+        rej1_data = rej1_res.json()
+        assert rej1_data["status"] == "WAITING_FOR_HUMAN_REVIEW"
+        assert rej1_data["human_rejection_count"] == 1
+        assert rej1_data["posts"][0]["content"] == post2.content
+
+        # 4. Reject #2 -> rejection_count = 2
+        rej2_res = await api_client.post(f"/api/v1/workflows/{workflow_id}/review", json=reject_payload)
+        assert rej2_res.status_code == 200
+        rej2_data = rej2_res.json()
+        assert rej2_data["status"] == "WAITING_FOR_HUMAN_REVIEW"
+        assert rej2_data["human_rejection_count"] == 2
+
+        # 5. Reject #3 -> rejection_count = 3
+        rej3_res = await api_client.post(f"/api/v1/workflows/{workflow_id}/review", json=reject_payload)
+        assert rej3_res.status_code == 200
+        rej3_data = rej3_res.json()
+        assert rej3_data["status"] == "WAITING_FOR_HUMAN_REVIEW"
+        assert rej3_data["human_rejection_count"] == 3
+
+        # 6. Reject #4 -> Terminal REJECTED
+        rej4_res = await api_client.post(f"/api/v1/workflows/{workflow_id}/review", json=reject_payload)
+        assert rej4_res.status_code == 200
+        rej4_data = rej4_res.json()
+        assert rej4_data["status"] == "REJECTED"
+        assert rej4_data["posts"][0]["status"] == "REJECTED"
 
 
 @pytest.mark.asyncio

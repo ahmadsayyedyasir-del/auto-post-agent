@@ -103,6 +103,8 @@ class WorkflowDetailResponse(BaseModel):
     revision_count: int
     agent_revision_count: int
     human_revision_count: int
+    human_rejection_count: int = 0
+    max_human_rejections: int = 3
     max_revisions: int
     research_data: dict[str, Any] | None
     content_plan: dict[str, Any] | None
@@ -209,6 +211,8 @@ def _format_workflow_response(wf: Any) -> WorkflowDetailResponse:
         revision_count=wf.revision_count,
         agent_revision_count=wf.agent_revision_count,
         human_revision_count=wf.human_revision_count,
+        human_rejection_count=getattr(wf, "human_rejection_count", 0),
+        max_human_rejections=getattr(wf, "max_human_rejections", 3),
         max_revisions=wf.max_revisions,
         research_data=wf.research_data,
         content_plan=wf.content_plan,
@@ -418,3 +422,45 @@ async def list_workflows(
         if hydrated:
             results.append(_format_workflow_response(hydrated))
     return results
+
+
+@router.delete(
+    "/{workflow_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a workflow run and all dependent records",
+)
+async def delete_workflow(
+    workflow_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> None:
+    """Delete a workflow and its associated posts, revisions, feedbacks, publications, and schedules.
+
+    Rules:
+    - Must require authentication and verify ownership.
+    - If workflow does not exist or belongs to another user -> returns 404.
+    - If workflow is actively running -> returns 409 Conflict.
+    - Returns 204 No Content on successful deletion.
+    """
+    service = WorkflowService()
+    repo = WorkflowRepository(session)
+    workflow = await repo.get_by_id(workflow_id)
+    if not workflow:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_id}' not found.",
+        )
+    _check_workflow_ownership(workflow, current_user)
+
+    try:
+        deleted = await service.delete_workflow(workflow_id, session, user_id=current_user.id)
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workflow '{workflow_id}' not found.",
+            )
+    except ValueError as val_err:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(val_err),
+        )

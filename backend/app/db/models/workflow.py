@@ -43,6 +43,8 @@ class WorkflowRun(Base):
     revision_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     agent_revision_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     human_revision_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    human_rejection_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_human_rejections: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     max_revisions: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     research_data: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     content_plan: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

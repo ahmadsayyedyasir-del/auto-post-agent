@@ -533,6 +533,57 @@ button, input, select, textarea {
   color: var(--text-primary);
 }
 
+.stepper-step.failed .stepper-circle {
+  background: var(--error);
+  border-color: var(--error);
+  color: #fff;
+}
+
+.stepper-step.waiting .stepper-circle {
+  background: var(--warning);
+  border-color: var(--warning);
+  color: #fff;
+}
+
+.stepper-subtitle {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.stepper-step.active .stepper-subtitle {
+  color: var(--accent-light);
+}
+
+.stepper-step.completed .stepper-subtitle {
+  color: var(--success);
+}
+
+.stepper-step.failed .stepper-subtitle,
+.stepper-step.failed .stepper-label {
+  color: var(--error);
+}
+
+.stepper-step.waiting .stepper-subtitle,
+.stepper-step.waiting .stepper-label {
+  color: var(--warning);
+}
+
+.stepper-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.7rem;
+  color: var(--error);
+  background: rgba(239, 68, 68, 0.1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: var(--space-1);
+}
+
 /* Diff View */
 .diff-container {
   font-family: var(--font-mono);

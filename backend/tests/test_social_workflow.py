@@ -337,6 +337,7 @@ async def test_workflow_handles_research_failure() -> None:
     final_state = await workflow.ainvoke(initial_state)
 
     assert final_state["status"] == WorkflowStatus.FAILED.value
+    assert final_state["current_stage"] == WorkflowStatus.RESEARCHING.value
     assert "Search provider timeout" in final_state["error"]
 
 
@@ -363,6 +364,7 @@ async def test_workflow_handles_planning_failure() -> None:
     final_state = await workflow.ainvoke(initial_state)
 
     assert final_state["status"] == WorkflowStatus.FAILED.value
+    assert final_state["current_stage"] == WorkflowStatus.PLANNING.value
     assert "Planning validation error" in final_state["error"]
 
 
@@ -393,6 +395,7 @@ async def test_workflow_handles_writer_failure() -> None:
     final_state = await workflow.ainvoke(initial_state)
 
     assert final_state["status"] == WorkflowStatus.FAILED.value
+    assert final_state["current_stage"] == WorkflowStatus.WRITING.value
     assert "LLM context window exhausted" in final_state["error"]
 
 
@@ -427,6 +430,7 @@ async def test_workflow_handles_critic_failure() -> None:
     final_state = await workflow.ainvoke(initial_state)
 
     assert final_state["status"] == WorkflowStatus.FAILED.value
+    assert final_state["current_stage"] == WorkflowStatus.CRITIQUING.value
     assert "Critic parsing error" in final_state["error"]
 
 

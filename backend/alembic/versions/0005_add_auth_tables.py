@@ -117,22 +117,23 @@ def upgrade() -> None:
     # -----------------------------------------------------------------------
     # 4. Add nullable user_id FK to workflow_runs (backward compatible)
     # -----------------------------------------------------------------------
-    op.add_column(
-        "workflow_runs",
-        sa.Column(
-            "user_id",
-            sa.String(length=36),
-            sa.ForeignKey("users.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-    )
-    op.create_index("ix_workflow_runs_user_id", "workflow_runs", ["user_id"])
+    with op.batch_alter_table("workflow_runs") as batch_op:
+        batch_op.add_column(
+            sa.Column(
+                "user_id",
+                sa.String(length=36),
+                sa.ForeignKey("users.id", name="fk_workflow_runs_user_id", ondelete="SET NULL"),
+                nullable=True,
+            )
+        )
+        batch_op.create_index("ix_workflow_runs_user_id", ["user_id"])
 
 
 def downgrade() -> None:
     # Remove user_id FK from workflow_runs
-    op.drop_index("ix_workflow_runs_user_id", table_name="workflow_runs")
-    op.drop_column("workflow_runs", "user_id")
+    with op.batch_alter_table("workflow_runs") as batch_op:
+        batch_op.drop_index("ix_workflow_runs_user_id")
+        batch_op.drop_column("user_id")
 
     # Drop refresh_tokens
     op.drop_index("ix_refresh_tokens_token_hash", table_name="refresh_tokens")

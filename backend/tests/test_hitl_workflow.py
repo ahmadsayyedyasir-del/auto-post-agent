@@ -192,16 +192,21 @@ async def test_workflow_resume_after_approve() -> None:
 
 
 @pytest.mark.asyncio
-async def test_workflow_resume_after_reject() -> None:
-    """Verify resuming with REJECT transitions workflow to terminal REJECTED status."""
+async def test_workflow_resume_after_reject_bounded_3_cycles() -> None:
+    """Verify resuming with REJECT loops up to 3 cycles (Writer -> Critic -> Human Review) and terminates on the 4th."""
     mock_research = AsyncMock(spec=ResearchAgent)
     mock_research.research.return_value = create_sample_research_response()
 
     mock_planning = AsyncMock(spec=PlanningAgent)
     mock_planning.plan.return_value = create_sample_content_plan()
 
+    post1 = create_sample_social_post("Draft 1 (Initial).")
+    post2 = create_sample_social_post("Draft 2 (After Reject 1).")
+    post3 = create_sample_social_post("Draft 3 (After Reject 2).")
+    post4 = create_sample_social_post("Draft 4 (After Reject 3).")
+
     mock_writer = AsyncMock(spec=WriterAgent)
-    mock_writer.write.return_value = create_sample_social_post()
+    mock_writer.write.side_effect = [post1, post2, post3, post4]
 
     mock_critic = AsyncMock(spec=CriticAgent)
     mock_critic.review.return_value = CriticResult(
@@ -221,26 +226,128 @@ async def test_workflow_resume_after_reject() -> None:
         checkpointer=checkpointer,
     )
 
-    config = {"configurable": {"thread_id": "thread-hitl-reject"}}
+    config = {"configurable": {"thread_id": "thread-hitl-reject-3-cycles"}}
     initial_state: SocialWorkflowState = {
         "request": create_sample_research_request(),
         "revision_count": 0,
         "agent_revision_count": 0,
         "human_revision_count": 0,
+        "human_rejection_count": 0,
+        "max_human_rejections": 3,
         "max_revisions": 2,
         "status": WorkflowStatus.STARTING.value,
     }
 
+    # Initial run -> pauses at Human Review
     await workflow.ainvoke(initial_state, config=config)
+    assert mock_writer.write.call_count == 1
+    assert mock_critic.review.call_count == 1
 
-    # Resume with REJECT
-    resumed_state = await workflow.ainvoke(
+    # Rejection 1 -> routes to Writer -> Critic -> Human Review
+    state_rej1 = await workflow.ainvoke(
         Command(resume={"action": HumanReviewAction.REJECT.value}),
         config=config,
     )
+    assert state_rej1["status"] == WorkflowStatus.WAITING_FOR_HUMAN_REVIEW.value
+    assert state_rej1["human_rejection_count"] == 1
+    assert state_rej1["social_post"].content == post2.content
+    assert mock_writer.write.call_count == 2
+    assert mock_critic.review.call_count == 2
 
-    assert resumed_state["status"] == WorkflowStatus.REJECTED.value
-    assert resumed_state["human_decision"] == HumanReviewAction.REJECT.value
+    # Rejection 2 -> routes to Writer -> Critic -> Human Review
+    state_rej2 = await workflow.ainvoke(
+        Command(resume={"action": HumanReviewAction.REJECT.value}),
+        config=config,
+    )
+    assert state_rej2["status"] == WorkflowStatus.WAITING_FOR_HUMAN_REVIEW.value
+    assert state_rej2["human_rejection_count"] == 2
+    assert state_rej2["social_post"].content == post3.content
+    assert mock_writer.write.call_count == 3
+    assert mock_critic.review.call_count == 3
+
+    # Rejection 3 -> routes to Writer -> Critic -> Human Review
+    state_rej3 = await workflow.ainvoke(
+        Command(resume={"action": HumanReviewAction.REJECT.value}),
+        config=config,
+    )
+    assert state_rej3["status"] == WorkflowStatus.WAITING_FOR_HUMAN_REVIEW.value
+    assert state_rej3["human_rejection_count"] == 3
+    assert state_rej3["social_post"].content == post4.content
+    assert mock_writer.write.call_count == 4
+    assert mock_critic.review.call_count == 4
+
+    # Rejection 4 -> Terminal REJECTED
+    state_rej4 = await workflow.ainvoke(
+        Command(resume={"action": HumanReviewAction.REJECT.value}),
+        config=config,
+    )
+    assert state_rej4["status"] == WorkflowStatus.REJECTED.value
+    assert state_rej4["human_decision"] == HumanReviewAction.REJECT.value
+    assert mock_writer.write.call_count == 4  # Writer not invoked on 4th rejection
+    assert mock_critic.review.call_count == 4
+
+
+@pytest.mark.asyncio
+async def test_workflow_approve_after_rejections() -> None:
+    """Verify that approving at any cycle after 1, 2, or 3 rejections successfully finalizes with APPROVED."""
+    for reject_cycles in [1, 2, 3]:
+        mock_research = AsyncMock(spec=ResearchAgent)
+        mock_research.research.return_value = create_sample_research_response()
+
+        mock_planning = AsyncMock(spec=PlanningAgent)
+        mock_planning.plan.return_value = create_sample_content_plan()
+
+        mock_writer = AsyncMock(spec=WriterAgent)
+        mock_writer.write.return_value = create_sample_social_post()
+
+        mock_critic = AsyncMock(spec=CriticAgent)
+        mock_critic.review.return_value = CriticResult(
+            decision="APPROVED",
+            issues=[],
+            feedback=[],
+            checks=QualityChecks(),
+            verified_sources=["https://venturebeat.com/ai/agentic-systems"],
+        )
+
+        checkpointer = MemorySaver()
+        workflow = create_social_workflow(
+            research_agent=mock_research,
+            planning_agent=mock_planning,
+            writer_agent=mock_writer,
+            critic_agent=mock_critic,
+            checkpointer=checkpointer,
+        )
+
+        config = {"configurable": {"thread_id": f"thread-hitl-approve-after-{reject_cycles}"}}
+        initial_state: SocialWorkflowState = {
+            "request": create_sample_research_request(),
+            "revision_count": 0,
+            "agent_revision_count": 0,
+            "human_revision_count": 0,
+            "human_rejection_count": 0,
+            "max_human_rejections": 3,
+            "max_revisions": 2,
+            "status": WorkflowStatus.STARTING.value,
+        }
+
+        # Start
+        await workflow.ainvoke(initial_state, config=config)
+
+        # Run N rejections
+        for _ in range(reject_cycles):
+            await workflow.ainvoke(
+                Command(resume={"action": HumanReviewAction.REJECT.value}),
+                config=config,
+            )
+
+        # Now approve
+        resumed = await workflow.ainvoke(
+            Command(resume={"action": HumanReviewAction.APPROVE.value}),
+            config=config,
+        )
+        assert resumed["status"] == WorkflowStatus.APPROVED.value
+        assert resumed["human_decision"] == HumanReviewAction.APPROVE.value
+        assert resumed["human_rejection_count"] == reject_cycles
 
 
 @pytest.mark.asyncio
